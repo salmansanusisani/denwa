@@ -1,0 +1,6 @@
+numpy
+anthropic
+python-dotenv
+# optional, for a real vector store instead of in-memory cosine similarity:
+# chromadb
+# faiss-cpu
