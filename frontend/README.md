@@ -1,44 +1,80 @@
-# Frontend
+# Denwa Frontend
 
-Owns: company onboarding UI, intake form, call history dashboard.
+React + TypeScript frontend foundation for Denwa — AI Callback Support Agent.
 
-## Tasks
+## What is included
+- Responsive dashboard matching the supplied Denwa UI reference.
+- Missed Calls list and Call Detail experience.
+- Call History with search/filter controls and pagination UI.
+- Knowledge Base document management UI.
+- Responsive navigation for desktop/tablet/mobile.
+- Loading/error/empty-state-ready component structure.
+- Frontend-only mock view data for visual development; replace the data layer with real backend endpoints before judging/demo.
 
-- [ ] Company onboarding screen — create a demo company, upload its knowledge-base file(s)/text.
-- [ ] Customer intake / simulate-call trigger — button that fires the "missed call" event with a phone number.
-- [ ] Call history dashboard — table of past calls: caller number, question asked, answer given, resolved,
-      timestamp.
-- [ ] Call detail view — click into a call for the full structured result (+ transcript link if available).
-- [ ] Basic auth/login screen — can be minimal / hardcoded demo login.
-
-## Definition of Done
-
-- [ ] All screens built and navigable end-to-end (no dead links/buttons).
-- [ ] Onboarding form sends the uploaded doc to the backend's ingestion endpoint, shows success/failure state.
-- [ ] Simulate-call button triggers the intake endpoint, shows a pending/loading state until a result comes back.
-- [ ] Dashboard displays real backend data (not mock) for at least one full demo run.
-- [ ] Handles "no result yet" and "call failed" states without breaking.
-- [ ] Tested end-to-end on the exact browser/device the demo will be shown on.
-
-## Layout
-
-```
-src/
-├── main.jsx
-├── App.jsx
-├── api/
-│   └── client.js     # fetch wrapper, VITE_API_BASE_URL
-└── pages/
-    ├── Login.jsx
-    ├── Onboarding.jsx
-    ├── IntakeSimulate.jsx
-    ├── CallHistory.jsx
-    └── CallDetail.jsx
-```
+## Source-aligned scope
+The implementation follows the supplied project specification: business onboarding/configuration, knowledge-base management, phone status, missed-call activity, call history/detail, follow-up, analytics and settings. The product UI does **not** add a customer-facing “Simulate Missed Call” control.
 
 ## Run
-
 ```bash
 npm install
 npm run dev
 ```
+
+## Next integration step
+Create `src/services/api.ts` and connect the screens to the agreed FastAPI contract. The frontend should consume real backend data for CallJob / CallResult states (`pending`, `in_progress`, `done`, `failed`) and preserve explicit loading, empty, error and retry states.
+# Denwa — AI Callback Support Agent
+
+Built on the [CALL-E](https://call-e.devpost.com/?ref_feature=challenge&ref_medium=discover) outbound calling
+platform. When a business misses a call, Denwa reads that business's own knowledge base and has an AI voice
+agent call the customer back to answer their question.
+
+Full design docs: `docs/ARCHITECTURE.md` and `docs/ROLES_AND_DOD.md` (source PDFs, condensed).
+
+## Repo layout
+
+```
+denwa/
+├── frontend/     # React (Vite) — onboarding UI, intake trigger, dashboard      [FRONTEND owns]
+├── backend/      # FastAPI — API gateway, queue, region resolver, CALL-E client [BACKEND owns]
+├── ai-ml/        # Python — ingestion, embeddings, retriever, task builder      [AI/ML owns]
+└── docs/         # Architecture + roles/DoD reference
+```
+
+Each folder has its own README with that role's task list and Definition of Done, copied straight out of the
+planning docs so nobody has to go dig through a PDF mid-build.
+
+## Branch naming
+
+`frontend/<short-task>`, `backend/<short-task>`, `ml/<short-task>` — e.g. `backend/calle-integration`.
+`main` is always demo-ready. See `docs/ROLES_AND_DOD.md` Section 6 for the full pre-push checklist.
+
+## Shared contract: CallJob / CallResult
+
+Everyone reads from the same shape (see `docs/ARCHITECTURE.md` Section 5). If you change a field here, ping the
+other roles it affects before merging — this is the one thing that will break someone else's build silently.
+
+```
+CallJob:    id, company_id, caller_number, status, created_at
+CallResult: id, call_job_id, question_asked, answer_given, resolved, needs_human_followup, transcript_url
+```
+
+## Env vars
+
+Copy `.env.example` to `.env` in `backend/` and `ai-ml/` and fill in real values. Never commit `.env`.
+
+## Getting started
+
+```bash
+# Backend
+cd backend && pip install -r requirements.txt && uvicorn app.main:app --reload
+
+# AI/ML (used as a library by backend/worker, or run standalone for testing)
+cd ai-ml && pip install -r requirements.txt
+
+# Frontend
+cd frontend && npm install && npm run dev
+```
+
+## Shared CALL-E call budget
+
+20 free calls on the team account, then $0.05/call. Post in the group before making a real test call.
