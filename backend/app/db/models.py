@@ -49,3 +49,15 @@ class CallResult(Base):
     resolved = Column(Boolean, default=False)
     needs_human_followup = Column(Boolean, default=False)
     transcript_url = Column(String, nullable=True)
+
+class TelephonyEvent(Base):
+    __tablename__ = "telephony_events"
+
+    id = Column(Integer, primary_key=True)
+    provider_event_id = Column(String, nullable=False, unique=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)
+    business_number = Column(String, nullable=False)
+    caller_number = Column(String, nullable=False)
+    event_type = Column(String, nullable=False)
+    occurred_at = Column(DateTime, nullable=False)
+    received_at = Column(DateTime, default=datetime.utcnow)

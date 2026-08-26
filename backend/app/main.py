@@ -17,6 +17,7 @@ app.add_middleware(
 app.include_router(companies.router)
 app.include_router(documents.router)
 app.include_router(calls.router)
+app.include_router(calls.internal_router)
 
 
 @app.on_event("startup")
