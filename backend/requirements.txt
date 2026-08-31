@@ -1,8 +1,8 @@
 fastapi
 uvicorn[standard]
 sqlalchemy
-pydantic
 python-dotenv
 phonenumbers
 httpx
+pydantic
 python-multipart
