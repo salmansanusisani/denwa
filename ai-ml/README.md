@@ -4,20 +4,21 @@ Owns: document ingestion, embeddings, retrieval, answer + task generation.
 
 ## Tasks
 
-- [ ] Document ingestion pipeline — chunk an uploaded file/text into retrieval-sized pieces.
-- [ ] Embedding + vector store — embed each chunk, store it (in-memory cosine similarity is fine).
-- [ ] Retriever — given a likely topic, return the most relevant chunks for that company.
-- [ ] Answer/task-builder LLM step — retrieved chunks → (a) condensed answer content, (b) a CALL-E task string
+- [x] Document ingestion pipeline — chunk an uploaded file/text into retrieval-sized pieces.
+- [x] Embedding + vector store — embed each chunk, store it (in-memory cosine similarity is fine).
+- [x] Retriever — given a likely topic, return the most relevant chunks for that company.
+- [x] Answer/task-builder LLM step — retrieved chunks → (a) condensed answer content, (b) a CALL-E task string
       + resultSchema.
-- [ ] Prompt safety pass — task must instruct the CALL-E agent to only answer from provided content and offer
+- [x] Prompt safety pass — task must instruct the CALL-E agent to only answer from provided content and offer
       a human follow-up when it can't, so it doesn't invent answers.
 
 ## Definition of Done
 
-- [ ] Sample company's FAQ/policy doc chunks and embeds with no manual cleanup.
-- [ ] Retrieval returns genuinely relevant chunks for 5 realistic test questions per demo company.
-- [ ] Generated task string is valid, concise, within CALL-E's task field length limit.
-- [ ] Generated resultSchema is valid JSON Schema and matches backend/frontend expectations.
+- [x] Sample company's FAQ/policy doc chunks and embeds with no manual cleanup (`python -m demo`).
+- [x] Retrieval returns genuinely relevant chunks for 5 realistic test questions per demo company — verified
+      with the local fallback embeddings; re-verify once real embedding keys are in `.env`.
+- [x] Generated task string is valid, concise, within CALL-E's task field length limit.
+- [x] Generated resultSchema is valid JSON Schema and matches backend/frontend expectations.
 - [ ] Tested against a real CALL-E call — agent uses the provided content, doesn't hallucinate.
 
 ## Layout
