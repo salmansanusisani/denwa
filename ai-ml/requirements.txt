@@ -1,6 +1,7 @@
 numpy
 openai
 python-dotenv
+fastembed
 # optional, for a real vector store instead of in-memory cosine similarity:
 # chromadb
 # faiss-cpu
