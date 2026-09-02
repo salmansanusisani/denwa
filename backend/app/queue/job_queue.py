@@ -1,18 +1,14 @@
-"""In-memory job queue for the hackathon. Swap for Redis + BullMQ-equivalent if time allows.
-
-TODO(backend): a simple `queue.Queue` + background thread/asyncio task is enough — the DoD only
-requires 5 consecutive runs without a stuck job, not production durability.
-"""
+"""In-memory job queue for the hackathon. Swap for Redis + BullMQ-equivalent if time allows."""
 from queue import Queue
 
 pending_jobs: Queue = Queue()
 
 
 def enqueue(call_job_id: int) -> None:
-    """TODO(backend): push a job id onto the queue for the worker to pick up."""
-    raise NotImplementedError
+    pending_jobs.put(call_job_id)
 
 
 def dequeue() -> int | None:
-    """TODO(backend): pop the next job id, or None if empty."""
-    raise NotImplementedError
+    if pending_jobs.empty():
+        return None
+    return pending_jobs.get()
