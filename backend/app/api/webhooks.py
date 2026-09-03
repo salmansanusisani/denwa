@@ -43,17 +43,7 @@ MISSED_CALL_STATUSES = {"no-answer", "busy", "failed"}
 
 
 def _verify_twilio_signature(request: Request, form: dict) -> bool:
-    """Validate the request actually came from Twilio.
-
-    Twilio signs the exact URL it called plus the POST params using the
-    account's Auth Token (HMAC-SHA1). See:
-    https://www.twilio.com/docs/usage/webhooks/webhooks-security
-
-    NOTE: `request.url` must match what Twilio actually requested byte-for-byte
-    (scheme + host + path + query). Behind a reverse proxy (e.g. ngrok) this
-    can require using X-Forwarded-Proto/Host — revisit once we're testing
-    against a real tunnel.
-    """
+    """Validate the request actually came from Twilio."""
     if WEBHOOK_SKIP_SIGNATURE_CHECK:
         logger.warning("WEBHOOK_SKIP_SIGNATURE_CHECK is enabled — signature check bypassed. DEV ONLY.")
         return True
@@ -62,7 +52,7 @@ def _verify_twilio_signature(request: Request, form: dict) -> bool:
         logger.error("TWILIO_AUTH_TOKEN is not configured; rejecting webhook.")
         return False
 
-        signature = request.headers.get("X-Twilio-Signature")
+    signature = request.headers.get("X-Twilio-Signature")
     if not signature:
         return False
 
@@ -78,7 +68,6 @@ def _verify_twilio_signature(request: Request, form: dict) -> bool:
 
     validator = RequestValidator(TWILIO_AUTH_TOKEN)
     return validator.validate(url, form, signature)
-
 @router.post("/telephony")
 async def telephony_webhook(request: Request, db: Session = Depends(get_db)):
     form = dict((await request.form()).items())
