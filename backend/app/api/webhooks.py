@@ -62,13 +62,22 @@ def _verify_twilio_signature(request: Request, form: dict) -> bool:
         logger.error("TWILIO_AUTH_TOKEN is not configured; rejecting webhook.")
         return False
 
-    signature = request.headers.get("X-Twilio-Signature")
+        signature = request.headers.get("X-Twilio-Signature")
     if not signature:
         return False
 
-    validator = RequestValidator(TWILIO_AUTH_TOKEN)
-    return validator.validate(str(request.url), form, signature)
+    # Reconstruct public URL if behind reverse proxy / ngrok tunnel
+    url = str(request.url)
+    forwarded_proto = request.headers.get("x-forwarded-proto")
+    forwarded_host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+    if forwarded_proto and forwarded_host:
+        path_and_query = request.url.path
+        if request.url.query:
+            path_and_query += f"?{request.url.query}"
+        url = f"{forwarded_proto}://{forwarded_host}{path_and_query}"
 
+    validator = RequestValidator(TWILIO_AUTH_TOKEN)
+    return validator.validate(url, form, signature)
 
 @router.post("/telephony")
 async def telephony_webhook(request: Request, db: Session = Depends(get_db)):
