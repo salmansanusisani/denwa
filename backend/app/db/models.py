@@ -28,6 +28,16 @@ class Document(Base):
     uploaded_at = Column(DateTime, default=datetime.utcnow)
 
 
+class Chunk(Base):
+    __tablename__ = "chunks"
+
+    id = Column(Integer, primary_key=True)
+    document_id = Column(Integer, ForeignKey("documents.id"), nullable=False)
+    text = Column(Text, nullable=False)
+    embedding_vector = Column(Text, nullable=True)
+
+
+
 class CallJob(Base):
     __tablename__ = "call_jobs"
 
