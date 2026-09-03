@@ -46,3 +46,66 @@ backend/
 ├── tests/                   # Comprehensive pytest test suite
 ├── test_webhook.py          # Standalone webhook signature & idempotency verification test
 └── requirements.txt         # Python dependencies
+```
+
+---
+
+## API Endpoints Overview
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/health` | Service health status |
+| `POST` | `/companies/` | Register a new company |
+| `GET` | `/companies/{id}` | Fetch company profile |
+| `POST` | `/webhooks/telephony` | Production entry point for telephony missed-call webhooks |
+| `GET` | `/calls/?company_id={id}` | List all calls and structured results for a company |
+| `GET` | `/calls/{call_job_id}` | Detailed view of a specific call and outcome |
+| `POST` | `/documents/upload` | Upload FAQ/knowledge documents and auto-generate chunks |
+| `GET` | `/documents/?company_id={id}` | List all uploaded documents for a company |
+| `POST` | `/internal/dev/trigger-callback` | *Dev-only:* Trigger callback pipeline without a real phone call |
+
+---
+
+## Getting Started
+
+### 1. Installation
+```bash
+python -m venv venv
+# Windows:
+venv\Scripts\activate
+# Linux/macOS:
+source venv/bin/activate
+
+pip install -r requirements.txt
+```
+
+### 2. Environment Configuration
+Create a `.env` file based on `.env.example`:
+```env
+DATABASE_URL=sqlite:///./denwa.db
+CALLE_API_KEY=your_calle_api_key
+CALLE_BASE_URL=https://api.call-e.com
+CALLE_DEFAULT_FALLBACK_REGION=US
+TWILIO_AUTH_TOKEN=your_twilio_auth_token
+WEBHOOK_SKIP_SIGNATURE_CHECK=false
+```
+
+### 3. Run the Server
+```bash
+uvicorn app.main:app --reload --port 8000
+```
+Interactive API documentation will be available at **`http://localhost:8000/docs`**.
+
+---
+
+## Running Tests
+
+Run the full automated test suite:
+```bash
+python -m pytest tests/ -v
+```
+
+Run the standalone webhook signature validation:
+```bash
+python test_webhook.py
+```
