@@ -2,7 +2,7 @@
 import json
 import logging
 from typing import List, Optional
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
@@ -16,7 +16,7 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 @router.post("/upload")
 async def upload_document(
     company_id: int = Form(...),
-    file: UploadFile = Form(...),
+    file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
     """Upload a knowledge base document for a company, save raw text and generate chunks."""

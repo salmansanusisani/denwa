@@ -109,11 +109,10 @@ async def run_worker_loop(
 
     while max_iterations is None or iterations < max_iterations:
         iterations += 1
-        with SessionLocal() as db:
-            job_id = dequeue(db)
-            if job_id is not None:
-                logger.info("Worker picked up job_id=%s", job_id)
+        job_id = dequeue()
+        if job_id is not None:
+            logger.info("Worker picked up job_id=%s", job_id)
+            with SessionLocal() as db:
                 await process_job(job_id=job_id, db=db, calle_client=calle_client)
-            else:
-                await asyncio.sleep(poll_interval)
-
+        else:
+            await asyncio.sleep(poll_interval)
