@@ -1,4 +1,4 @@
-"""CALL-E client wrapper. Built against the stable Calls API.
+"""CALL-E client wrapper.
 
 Features:
 - Auth via CALLE_API_KEY and base URL via CALLE_BASE_URL.
@@ -155,13 +155,11 @@ class CalleClient:
 
         call_id = call_init.get("id") or call_init.get("call_id")
         if not call_id:
-
             if "result" in call_init or "resolved" in call_init:
                 return self._extract_result(call_init)
             raise CalleError("No call_id returned from CALL-E call initiation")
 
-    
-            elapsed = 0.0
+        elapsed = 0.0
         while elapsed < max_wait_seconds:
             await asyncio.sleep(poll_interval)
             elapsed += poll_interval
@@ -204,4 +202,3 @@ class CalleClient:
             ),
             "transcript_url": call_data.get("transcript_url") or call_data.get("recording_url"),
         }
-
