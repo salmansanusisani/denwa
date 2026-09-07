@@ -1,32 +1,31 @@
-"""Real telephony webhook — the actual production entry point (spec Step 03-05).
+"""Real telephony webhook -  the actual production entry point (spec Step 03-05).
 
 This is NOT a customer-facing "simulate missed call" feature. It is the
-endpoint Twilio calls when a real customer call to a real business number
-goes unanswered.
+endpoint Telnyx calls for real call state changes on our business number.
 
-Flow:
-    Twilio POSTs form-encoded data
-    -> verify X-Twilio-Signature (reject if invalid/missing)
-    -> validate required fields are present
-    -> ignore event types we don't care about (only no-answer / busy matter)
-    -> dedupe on CallSid (Twilio's unique id for this call)
-    -> normalize phone numbers
-    -> resolve Company from the business number (`To`)
-    -> persist TelephonyEvent + create CallJob(status="pending")
-    -> enqueue the job for the worker
-    -> always return 200 quickly (Twilio retries aggressively on non-2xx)
+Provider: Telnyx Call Control API (v2).
 
-We MUST NOT do slow work (AI/ML retrieval, CALL-E calls) inside this
-handler — that belongs to the worker (app/worker/callback_worker.py).
+IMPORTANT / NOT YET FULLY VERIFIED:
+Telnyx's exact set of `hangup_cause` values for a "call rang and nobody
+picked up" scenario has not been confirmed against a real live test call
+yet. MISSED_HANGUP_CAUSES below is a best-effort mapping based on Telnyx's
+public docs. On the first real end-to-end test, we should log and inspect the raw
+payload (see the logger.info call below) and adjust this set if the actual
+cause differs from what's listed.
 """
+import base64
+import json
 import logging
+import time
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Request, Response
+from nacl.encoding import Base64Encoder
+from nacl.exceptions import BadSignatureError
+from nacl.signing import VerifyKey
 from sqlalchemy.orm import Session
-from twilio.request_validator import RequestValidator
 
-from app.config import TWILIO_AUTH_TOKEN, WEBHOOK_SKIP_SIGNATURE_CHECK
+from app.config import TELNYX_PUBLIC_KEY, WEBHOOK_SKIP_SIGNATURE_CHECK, WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS
 from app.db.database import get_db
 from app.db.models import CallJob, TelephonyEvent
 from app.api.companies import get_company_by_business_number
@@ -37,71 +36,108 @@ logger = logging.getLogger("denwa.webhooks")
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
-# Twilio CallStatus values that represent a genuinely missed call.
-# Everything else (completed, in-progress, ringing, ...) is ignored.
-MISSED_CALL_STATUSES = {"no-answer", "busy", "failed"}
+# The only event type we act on. call.initiated / call.answered / etc. are
+# ignored — we only need to know how a call ended.
+RELEVANT_EVENT_TYPE = "call.hangup"
+
+# Best-effort mapping of Telnyx hangup_cause -> "this was a missed call".
+# NOT YET CONFIRMED against a real call — verify on first live test (see
+# module docstring above) and adjust if needed.
+MISSED_HANGUP_CAUSES = {"no_answer", "originator_cancel", "call_rejected", "timeout"}
 
 
-def _verify_twilio_signature(request: Request, form: dict) -> bool:
-    """Validate the request actually came from Twilio."""
+def _verify_telnyx_signature(raw_body: bytes, signature_header, timestamp_header) -> bool:
+    """Validate the request actually came from Telnyx.
+
+    Telnyx signs `{timestamp}|{raw_body}` with Ed25519 and sends the
+    signature in the `telnyx-signature-ed25519` header (base64) alongside
+    `telnyx-timestamp`. Verification uses our account's PUBLIC key — this
+    is asymmetric signing, not a shared HMAC secret.
+    Docs: https://developers.telnyx.com/docs/development/sdk/python/webhooks
+    """
     if WEBHOOK_SKIP_SIGNATURE_CHECK:
         logger.warning("WEBHOOK_SKIP_SIGNATURE_CHECK is enabled — signature check bypassed. DEV ONLY.")
         return True
 
-    if not TWILIO_AUTH_TOKEN:
-        logger.error("TWILIO_AUTH_TOKEN is not configured; rejecting webhook.")
+    if not TELNYX_PUBLIC_KEY:
+        logger.error("TELNYX_PUBLIC_KEY is not configured; rejecting webhook.")
         return False
 
-    signature = request.headers.get("X-Twilio-Signature")
-    if not signature:
+    if not signature_header or not timestamp_header:
         return False
 
-    # Reconstruct public URL if behind reverse proxy / ngrok tunnel
-    url = str(request.url)
-    forwarded_proto = request.headers.get("x-forwarded-proto")
-    forwarded_host = request.headers.get("x-forwarded-host") or request.headers.get("host")
-    if forwarded_proto and forwarded_host:
-        path_and_query = request.url.path
-        if request.url.query:
-            path_and_query += f"?{request.url.query}"
-        url = f"{forwarded_proto}://{forwarded_host}{path_and_query}"
+    # Replay-attack guard: reject stale timestamps.
+    try:
+        ts = int(timestamp_header)
+    except ValueError:
+        return False
+    if abs(time.time() - ts) > WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS:
+        logger.warning("Rejected webhook: timestamp outside tolerance window.")
+        return False
 
-    validator = RequestValidator(TWILIO_AUTH_TOKEN)
-    return validator.validate(url, form, signature)
+    try:
+        verify_key = VerifyKey(TELNYX_PUBLIC_KEY, encoder=Base64Encoder)
+        signed_payload = f"{timestamp_header}|{raw_body.decode('utf-8')}".encode("utf-8")
+        signature_bytes = base64.b64decode(signature_header)
+        verify_key.verify(signed_payload, signature_bytes)
+        return True
+    except (BadSignatureError, ValueError, Exception):
+        return False
+
+
 @router.post("/telephony")
 async def telephony_webhook(request: Request, db: Session = Depends(get_db)):
-    form = dict((await request.form()).items())
+    raw_body = await request.body()
 
     # --- 1. Authenticity ---------------------------------------------------
-    if not _verify_twilio_signature(request, form):
-        logger.warning("Rejected webhook: invalid or missing Twilio signature.")
-        # 403, not 500 - this is an auth failure, not a server error.
+    signature_header = request.headers.get("telnyx-signature-ed25519")
+    timestamp_header = request.headers.get("telnyx-timestamp")
+    if not _verify_telnyx_signature(raw_body, signature_header, timestamp_header):
+        logger.warning("Rejected webhook: invalid, missing, or stale Telnyx signature.")
         return Response(status_code=403, content="Invalid signature")
 
-    # --- 2. Payload validation ----------------------------------------------
-    call_sid = form.get("CallSid")
-    from_number = form.get("From")
-    to_number = form.get("To")
-    call_status = form.get("CallStatus")
+    # --- 2. Payload parsing / validation -------------------------------------
+    # NOTE: Telnyx wraps the actual event fields inside a top-level "data"
+    # object, alongside a sibling "meta" object with delivery info:
+    #   { "data": { "id": ..., "event_type": ..., "payload": {...} }, "meta": {...} }
+    # (Confirmed against a real webhook delivery on 2026-09 — the original
+    # assumption that id/event_type sat at the root was wrong and caused
+    # every real event to be rejected as "missing id/event_type".)
+    try:
+        envelope = json.loads(raw_body)
+    except json.JSONDecodeError:
+        logger.warning("Rejected webhook: body is not valid JSON.")
+        return Response(status_code=400, content="Malformed JSON body")
 
-    if not all([call_sid, from_number, to_number, call_status]):
-        logger.warning("Rejected webhook: missing required fields. Payload keys=%s", list(form.keys()))
+    event = envelope.get("data") or {}
+    event_id = event.get("id")
+    event_type = event.get("event_type")
+    payload = event.get("payload") or {}
+
+    if not event_id or not event_type:
+        logger.warning("Rejected webhook: missing id/event_type. Keys=%s", list(envelope.keys()))
         return Response(status_code=400, content="Missing required fields")
 
     # --- 3. Event-type filter -----------------------------------------------
-    # Twilio calls this webhook for every status change (ringing, answered,
-    # completed, ...), not just missed calls. We only act on missed calls;
-    # anything else is acknowledged and dropped.
-    if call_status not in MISSED_CALL_STATUSES:
-        return Response(status_code=200, content="Ignored: not a missed-call status")
+    if event_type != RELEVANT_EVENT_TYPE:
+        return Response(status_code=200, content="Ignored: not a call.hangup event")
+
+    hangup_cause = payload.get("hangup_cause")
+    logger.info("call.hangup received: hangup_cause=%s call_control_id=%s", hangup_cause, payload.get("call_control_id"))
+
+    if hangup_cause not in MISSED_HANGUP_CAUSES:
+        return Response(status_code=200, content="Ignored: not a missed-call hangup_cause")
+
+    from_number = payload.get("from")
+    to_number = payload.get("to")
+    if not from_number or not to_number:
+        logger.warning("Rejected webhook: missing from/to in payload. Payload=%s", payload)
+        return Response(status_code=400, content="Missing from/to in payload")
 
     # --- 4. Idempotency / dedup ---------------------------------------------
-    # Twilio may redeliver the same event (retries, duplicate status
-    # callbacks). CallSid is Twilio's unique id for the call, so it's our
-    # dedup key, one CallSid must never produce more than one CallJob.
-    existing = db.query(TelephonyEvent).filter(TelephonyEvent.provider_event_id == call_sid).first()
+    existing = db.query(TelephonyEvent).filter(TelephonyEvent.provider_event_id == event_id).first()
     if existing is not None:
-        logger.info("Duplicate webhook for CallSid=%s — ignoring.", call_sid)
+        logger.info("Duplicate webhook for event id=%s — ignoring.", event_id)
         return Response(status_code=200, content="Duplicate event, already processed")
 
     # --- 5. Normalize numbers ------------------------------------------------
@@ -111,25 +147,27 @@ async def telephony_webhook(request: Request, db: Session = Depends(get_db)):
         logger.warning(
             "Rejected webhook: unparseable phone numbers. From=%s To=%s", from_number, to_number
         )
-        # 200: this is a data problem on the provider/caller side, not
-        # something Twilio should retry.
         return Response(status_code=200, content="Unparseable phone numbers")
 
     # --- 6. Company routing ---------------------------------------------------
     company = get_company_by_business_number(db, normalized_business)
     if company is None:
-        logger.warning("No company found for business_number=%s (CallSid=%s)", normalized_business, call_sid)
+        logger.warning("No company found for business_number=%s (event id=%s)", normalized_business, event_id)
         return Response(status_code=200, content="Unknown business number")
 
     # --- 7. Persist event + create job ----------------------------------------
-    occurred_at = datetime.now(timezone.utc)
+    occurred_at_raw = payload.get("occurred_at")
+    try:
+        occurred_at = datetime.fromisoformat(occurred_at_raw.replace("Z", "+00:00")) if occurred_at_raw else datetime.now(timezone.utc)
+    except (ValueError, AttributeError):
+        occurred_at = datetime.now(timezone.utc)
 
     telephony_event = TelephonyEvent(
-        provider_event_id=call_sid,
+        provider_event_id=event_id,
         company_id=company.id,
         business_number=normalized_business,
         caller_number=normalized_caller,
-        event_type=call_status,
+        event_type=hangup_cause,
         occurred_at=occurred_at,
     )
     db.add(telephony_event)
@@ -148,6 +186,7 @@ async def telephony_webhook(request: Request, db: Session = Depends(get_db)):
     enqueue(call_job.id)
 
     logger.info(
-        "Created CallJob id=%s for company_id=%s from CallSid=%s", call_job.id, company.id, call_sid
+        "Created CallJob id=%s for company_id=%s from event id=%s (hangup_cause=%s)",
+        call_job.id, company.id, event_id, hangup_cause,
     )
     return Response(status_code=200, content="Callback job created")

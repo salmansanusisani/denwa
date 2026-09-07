@@ -161,12 +161,22 @@ class CalleClient:
             raise CalleError("No call_id returned from CALL-E call initiation")
 
     
-        elapsed = 0.0
+            elapsed = 0.0
         while elapsed < max_wait_seconds:
             await asyncio.sleep(poll_interval)
             elapsed += poll_interval
 
-            call_data = await self.get_call(call_id)
+            try:
+                call_data = await self.get_call(call_id)
+            except CalleRateLimitError as rle:
+                sleep_time = rle.retry_after or poll_interval
+                await asyncio.sleep(sleep_time)
+                elapsed += sleep_time
+                continue
+            except (httpx.HTTPError, CalleError) as err:
+                logger.warning("Transient error polling call_id=%s (%s), retrying...", call_id, err)
+                continue
+
             current_status = call_data.get("status")
             logger.debug("Polled call_id=%s, status=%s", call_id, current_status)
 

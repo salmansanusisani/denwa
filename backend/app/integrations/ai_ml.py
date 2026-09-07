@@ -58,19 +58,23 @@ def get_verified_context_and_task(
         context = context_override
     else:
         try:
+            import importlib.util
             ai_ml_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "ai-ml"))
-            if os.path.exists(ai_ml_dir) and ai_ml_dir not in sys.path:
-                sys.path.insert(0, ai_ml_dir)
-
-            from app.task_builder.builder import build_task 
-
-            built = build_task(company_id=company_id, likely_topic=likely_topic)
-            if built and "task" in built and "result_schema" in built:
-                return {
-                    "context": built.get("context", ""),
-                    "task": built["task"],
-                    "result_schema": built.get("result_schema", RESULT_SCHEMA),
-                }
+            builder_file = os.path.join(ai_ml_dir, "app", "task_builder", "builder.py")
+            if os.path.exists(builder_file):
+                if ai_ml_dir not in sys.path:
+                    sys.path.insert(0, ai_ml_dir)
+                spec = importlib.util.spec_from_file_location("ai_ml_task_builder", builder_file)
+                if spec and spec.loader:
+                    builder_mod = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(builder_mod)
+                    built = builder_mod.build_task(company_id=company_id, likely_topic=likely_topic)
+                    if built and "task" in built and "result_schema" in built:
+                        return {
+                            "context": built.get("context", ""),
+                            "task": built["task"],
+                            "result_schema": built.get("result_schema", RESULT_SCHEMA),
+                        }
         except Exception as exc:
             logger.debug("Local ai-ml module not available or errored: %s; using internal template", exc)
 

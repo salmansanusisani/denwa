@@ -9,9 +9,14 @@ CALLE_API_KEY = os.getenv("CALLE_API_KEY", "")
 CALLE_BASE_URL = os.getenv("CALLE_BASE_URL", "")
 CALLE_DEFAULT_FALLBACK_REGION = os.getenv("CALLE_DEFAULT_FALLBACK_REGION", "US")
 
-# Telephony provider (Twilio) - used to verify the authenticity of incoming
-# missed-call webhooks. Must be kept secret; never log or expose this value.
-TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
+# Telephony provider (Telnyx) - the account's PUBLIC key (Mission Control
+# Portal -> Account Settings -> Keys & Credentials -> Public Key), used to
+# verify the Ed25519 signature on incoming webhooks.
+TELNYX_PUBLIC_KEY = os.getenv("TELNYX_PUBLIC_KEY", "")
+
+# Max age (seconds) a webhook's `telnyx-timestamp` may have before we reject
+# it as a possible replay attack. Telnyx recommends enforcing a window.
+WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS = int(os.getenv("WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS", "300"))
 
 # When True, skips signature verification. Only for local dev testing with
 # fake/self-signed payloads before a real Twilio account exists.
