@@ -1,13 +1,23 @@
 """Shared pytest fixtures for Denwa backend test suite."""
+import base64
 import os
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from nacl.encoding import Base64Encoder
+from nacl.signing import SigningKey
+
+# Generate one real Ed25519 keypair for the whole test session. Tests sign
+# payloads with TEST_SIGNING_KEY; the app verifies them against the
+# corresponding public key, injected below as TELNYX_PUBLIC_KEY.
+TEST_SIGNING_KEY = SigningKey.generate()
+_TEST_PUBLIC_KEY_B64 = TEST_SIGNING_KEY.verify_key.encode(encoder=Base64Encoder).decode("utf-8")
 
 # Setup test environment variables
-os.environ["TWILIO_AUTH_TOKEN"] = "test_twilio_secret_token"
+os.environ["TELNYX_PUBLIC_KEY"] = _TEST_PUBLIC_KEY_B64
 os.environ["WEBHOOK_SKIP_SIGNATURE_CHECK"] = "false"
+os.environ["WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS"] = "300"
 os.environ["CALLE_API_KEY"] = "test_calle_api_key"
 os.environ["CALLE_BASE_URL"] = "https://mock-calle.test"
 os.environ["CALLE_DEFAULT_FALLBACK_REGION"] = "US"
