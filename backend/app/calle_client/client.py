@@ -6,6 +6,7 @@ Features:
 - Explicit error handling for 401 Unauthorized, 429 Rate Limit (with Retry-After), and 5xx/network failures.
 - Polling for terminal call states (completed, failed, result_validation_failed).
 - Structured response parsing conforming to shared data contract.
+- Updated for current CALL-E API shape (recipients + result_schema).
 """
 import asyncio
 import logging
@@ -49,7 +50,7 @@ class CalleClient:
         timeout: float = 30.0,
     ):
         self.api_key = api_key
-        self.base_url = (base_url or "https://api.call-e.com").rstrip("/")
+        self.base_url = (base_url or "https://api.heycall-e.com").rstrip("/")
         self.timeout = timeout
 
     def _get_headers(self, idempotency_key: Optional[str] = None) -> Dict[str, str]:
@@ -86,16 +87,26 @@ class CalleClient:
         result_schema: Dict[str, Any],
         idempotency_key: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Initiate an outbound call via CALL-E."""
+        """Initiate an outbound call via CALL-E (current API shape)."""
         if not self.api_key:
             raise CalleAuthError("CALLE_API_KEY is not configured")
 
         url = f"{self.base_url}/v1/calls"
-        payload = {
+
+        # Convert old-style recipient → new API shape
+        phone = recipient.get("phone") or (recipient.get("phones") or [None])[0]
+        region = recipient.get("region")
+
+        recipient_obj: Dict[str, Any] = {"phones": [phone]}
+        if region:
+            recipient_obj["region"] = region
+
+        payload: Dict[str, Any] = {
             "task": task,
-            "recipient": recipient,
-            "resultSchema": result_schema,
+            "recipients": [recipient_obj],
+            "result_schema": result_schema,  # snake_case required by current API
         }
+
         headers = self._get_headers(idempotency_key=idempotency_key)
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -133,7 +144,7 @@ class CalleClient:
         result_schema: Dict[str, Any],
         idempotency_key: Optional[str] = None,
         poll_interval: float = 2.0,
-        max_wait_seconds: float = 120.0,
+        max_wait_seconds: float = 180.0,
     ) -> Dict[str, Any]:
         """Initiate a call and poll until completion, returning structured result.
 
@@ -150,12 +161,14 @@ class CalleClient:
 
         if status == "completed":
             return self._extract_result(call_init)
-        if status in ("failed", "result_validation_failed"):
-            raise CalleCallFailedError(f"CALL-E call immediately finished with status '{status}'", call_init)
+        if status in ("failed", "result_validation_failed", "canceled"):
+            raise CalleCallFailedError(
+                f"CALL-E call immediately finished with status '{status}'", call_init
+            )
 
         call_id = call_init.get("id") or call_init.get("call_id")
         if not call_id:
-            if "result" in call_init or "resolved" in call_init:
+            if "structured_result" in call_init or "result" in call_init:
                 return self._extract_result(call_init)
             raise CalleError("No call_id returned from CALL-E call initiation")
 
@@ -189,16 +202,24 @@ class CalleClient:
 
     def _extract_result(self, call_data: Dict[str, Any]) -> Dict[str, Any]:
         """Extract structured fields matching the shared CallResult data contract."""
-        result_payload = call_data.get("result") or call_data.get("structured_result") or {}
+        result_payload = {}
+        recipients = call_data.get("recipients") or []
+        if recipients and isinstance(recipients[0], dict):
+            result_payload = recipients[0].get("structured_result") or {}
+        if not result_payload:
+            result_payload = (
+                call_data.get("structured_result")
+                or call_data.get("result")
+                or {}
+            )
+
         if not isinstance(result_payload, dict):
             result_payload = {}
 
         return {
-            "question_asked": result_payload.get("question_asked") or call_data.get("question_asked") or "",
-            "answer_given": result_payload.get("answer_given") or call_data.get("answer_given") or "",
-            "resolved": bool(result_payload.get("resolved", call_data.get("resolved", False))),
-            "needs_human_followup": bool(
-                result_payload.get("needs_human_followup", call_data.get("needs_human_followup", False))
-            ),
+            "question_asked": result_payload.get("question_asked") or "",
+            "answer_given": result_payload.get("answer_given") or "",
+            "resolved": bool(result_payload.get("resolved", False)),
+            "needs_human_followup": bool(result_payload.get("needs_human_followup", False)),
             "transcript_url": call_data.get("transcript_url") or call_data.get("recording_url"),
         }

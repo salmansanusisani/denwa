@@ -23,6 +23,7 @@ async def process_job(
     job_id: int,
     db: Session,
     calle_client: Optional[CalleClient] = None,
+    context_override: Optional[str] = None,
 ) -> bool:
     """Process a single CallJob end-to-end.
 
@@ -55,7 +56,8 @@ async def process_job(
         task_data = get_verified_context_and_task(
             company_id=company.id,
             caller_number=job.caller_number,
-        )
+            context_override=context_override,
+            )
         task = task_data["task"]
         result_schema = task_data["result_schema"]
 

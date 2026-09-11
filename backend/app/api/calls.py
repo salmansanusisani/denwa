@@ -2,7 +2,8 @@
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status, Body
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
@@ -14,6 +15,10 @@ logger = logging.getLogger("denwa.calls")
 
 router = APIRouter(prefix="/calls", tags=["calls"])
 internal_router = APIRouter(prefix="/internal/dev", tags=["internal-dev"])
+
+
+class TriggerCallbackBody(BaseModel):
+    context_override: Optional[str] = None
 
 
 def _format_job_with_result(job: CallJob, result: Optional[CallResult] = None) -> Dict[str, Any]:
@@ -39,16 +44,16 @@ def _format_job_with_result(job: CallJob, result: Optional[CallResult] = None) -
 
 
 @internal_router.post("/trigger-callback")
-def trigger_intake(
+async def trigger_intake(
     company_id: int,
     caller_number: str,
+    body: TriggerCallbackBody = Body(default=TriggerCallbackBody()),
     db: Session = Depends(get_db),
 ):
     """INTERNAL/DEV ONLY — not part of the product surface.
 
     Used by backend/AI-ML/CALL-E integration testing to create a CallJob
     without waiting on a real phone call. Frontend must NOT expose this.
-    Creates a pending CallJob and pushes it onto the database queue.
     """
     company = db.query(Company).filter(Company.id == company_id).first()
     if not company:
@@ -67,7 +72,19 @@ def trigger_intake(
     db.commit()
     db.refresh(job)
 
-    enqueue(job.id, db=db)
+    context_override = body.context_override
+
+    if context_override:
+        # Dev testing path: process immediately in this same request/process,
+        # bypassing the separate background worker loop. Avoids needing a
+        # second process to share in-memory state, and requires zero schema
+        # changes to CallJob.
+        from app.worker.callback_worker import process_job
+        await process_job(job_id=job.id, db=db, context_override=context_override)
+    else:
+        enqueue(job.id, db=db)
+
+    db.refresh(job)
     logger.info("Dev trigger created CallJob id=%s for company_id=%s", job.id, company.id)
 
     return {
@@ -119,4 +136,3 @@ def get_call_detail(
 
     result = db.query(CallResult).filter(CallResult.call_job_id == call_job_id).first()
     return _format_job_with_result(job, result)
-
