@@ -1,11 +1,13 @@
 """Intake trigger, call history, call detail."""
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status, Body
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app import config
 from app.db.database import get_db
 from app.db.models import CallJob, CallResult, Company
 from app.queue.job_queue import enqueue
@@ -91,6 +93,33 @@ async def trigger_intake(
         "status": "ok",
         "job_id": job.id,
         "call_job": _format_job_with_result(job),
+    }
+
+
+@internal_router.get("/config-status")
+def config_status(db: Session = Depends(get_db)):
+    """Read-only provider/worker status for the UI's Phone Numbers / Settings
+    screens. Only presence booleans — never exposes secret material."""
+    business = config.BUSINESS_PHONE_NUMBER.strip()
+    normalized_business = None
+    registered = False
+    if business:
+        normalized_business = normalize_phone_number(business)
+        if normalized_business is None:
+            business = ""
+        else:
+            registered = (
+                db.query(Company).filter(Company.phone_number == normalized_business).first() is not None
+            )
+    return {
+        "call_e_configured": bool(config.CALLE_API_KEY),
+        "call_e_base_url": config.CALLE_BASE_URL or "https://api.heycall-e.com",
+        "telnyx_configured": bool(config.TELNYX_PUBLIC_KEY),
+        "signature_check_enabled": not config.WEBHOOK_SKIP_SIGNATURE_CHECK,
+        "worker_enabled": config.WORKER_ENABLED,
+        "groq_configured": bool(os.getenv("GROQ_API_KEY")),
+        "business_phone_number": normalized_business or business or "",
+        "business_phone_registered": registered,
     }
 
 

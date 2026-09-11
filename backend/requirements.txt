@@ -7,3 +7,7 @@ httpx
 pydantic
 python-multipart
 pynacl
+numpy
+openai
+pytest
+pytest-asyncio

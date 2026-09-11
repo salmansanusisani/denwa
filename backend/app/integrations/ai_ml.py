@@ -1,11 +1,12 @@
 """AI/ML Integration Client for Denwa.
 
-Provides a clean, mockable interface for retrieving verified context and building
-the CALL-E task string and resultSchema.
+Retrieves verified company context from the RAG pipeline and builds the CALL-E
+task string and resultSchema. This is the seam the callback worker uses; it is
+kept thin and easy to mock.
 
-Contract with AI/ML:
+Contract:
 - Inputs: company_id (int), caller_number (str), optional likely_topic (str)
-- Outputs: dict containing:
+- Outputs: dict:
     {
         "context": str,
         "task": str,
@@ -13,9 +14,9 @@ Contract with AI/ML:
     }
 """
 import logging
-import os
-import sys
 from typing import Any, Dict, Optional
+
+from app.rag import builder as rag_builder
 
 logger = logging.getLogger("denwa.ai_client")
 
@@ -49,38 +50,37 @@ def get_verified_context_and_task(
 ) -> Dict[str, Any]:
     """Retrieve verified knowledge base context and assemble the CALL-E task.
 
-    This function attempts to use the project's ai-ml builder if present,
-    or falls back to a deterministic, prompt-safe template.
+    Uses the packaged RAG pipeline (``app.rag``) so uploaded company documents
+    are chunked, embedded and retrieved from the in-memory index.
     """
-    context = ""
+    if context_override is not None and context_override.strip():
+        context = context_override.strip()
+        task_str = _TASK_TEMPLATE.format(
+            company_id=company_id,
+            caller_number=caller_number,
+            content=context,
+        )
+        return {
+            "context": context,
+            "task": task_str,
+            "result_schema": RESULT_SCHEMA,
+        }
 
-    if context_override is not None:
-        context = context_override
-    else:
-        try:
-            import importlib.util
-            ai_ml_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "ai-ml"))
-            builder_file = os.path.join(ai_ml_dir, "app", "task_builder", "builder.py")
-            if os.path.exists(builder_file):
-                if ai_ml_dir not in sys.path:
-                    sys.path.insert(0, ai_ml_dir)
-                spec = importlib.util.spec_from_file_location("ai_ml_task_builder", builder_file)
-                if spec and spec.loader:
-                    builder_mod = importlib.util.module_from_spec(spec)
-                    spec.loader.exec_module(builder_mod)
-                    built = builder_mod.build_task(company_id=company_id, likely_topic=likely_topic)
-                    if built and "task" in built and "result_schema" in built:
-                        return {
-                            "context": built.get("context", ""),
-                            "task": built["task"],
-                            "result_schema": built.get("result_schema", RESULT_SCHEMA),
-                        }
-        except Exception as exc:
-            logger.debug("Local ai-ml module not available or errored: %s; using internal template", exc)
+    try:
+        built = rag_builder.build_task(company_id, likely_topic)
+        if built and built.get("task"):
+            return {
+                "context": built.get("content", ""),
+                "task": built["task"],
+                "result_schema": built.get("result_schema", RESULT_SCHEMA),
+            }
+    except Exception as exc:
+        logger.warning("RAG task builder failed; using fallback template: %s", exc)
 
-    if not context.strip():
-        context = "(No verified knowledge base documents available. Greet the caller, ask their question, and politely offer a human callback.)"
-
+    context = (
+        "(No verified knowledge base documents available. Greet the caller, ask their "
+        "question, and politely offer a human callback.)"
+    )
     task_str = _TASK_TEMPLATE.format(
         company_id=company_id,
         caller_number=caller_number,

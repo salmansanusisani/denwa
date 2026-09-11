@@ -10,7 +10,7 @@ def normalize_phone_number(raw_number: str, default_region: str | None = None) -
     handle that explicitly rather than silently storing a bad number.
     """
     try:
-        parsed = phonenumbers.parse(raw_number, default_region)
+        parsed = phonenumbers.parse(raw_number.strip(), default_region)
     except NumberParseException:
         return None
 

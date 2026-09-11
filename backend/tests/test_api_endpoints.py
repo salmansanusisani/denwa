@@ -22,6 +22,28 @@ def test_companies_crud(client):
     assert resp_dup.status_code == 409
 
 
+def test_company_lookup_by_phone(client, sample_company):
+    from urllib.parse import quote
+
+    # Exact match on a registered business number
+    resp = client.get(f"/companies/lookup?phone_number={quote(sample_company.phone_number, safe='')}")
+    assert resp.status_code == 200
+    assert resp.json()["id"] == sample_company.id
+
+    # Same number typed with spaces still matches (E.164 normalize)
+    resp_alt = client.get("/companies/lookup?phone_number=%2B1%20650%20253%200000")
+    assert resp_alt.status_code == 200
+    assert resp_alt.json()["id"] == sample_company.id
+
+    # Unregistered number
+    resp_miss = client.get("/companies/lookup?phone_number=%2B16175550000")
+    assert resp_miss.status_code == 404
+
+    # Unparseable number
+    resp_bad = client.get("/companies/lookup?phone_number=notaphone")
+    assert resp_bad.status_code == 422
+
+
 def test_internal_dev_trigger_callback(client, sample_company, db_session):
     resp = client.post(
         f"/internal/dev/trigger-callback?company_id={sample_company.id}&caller_number=%2B16502531111"

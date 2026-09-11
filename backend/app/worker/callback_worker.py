@@ -9,6 +9,7 @@ import logging
 from typing import Optional
 from sqlalchemy.orm import Session
 
+from app.config import CALLE_API_KEY
 from app.db.database import SessionLocal
 from app.db.models import CallJob, CallResult, Company
 from app.queue.job_queue import dequeue
@@ -27,8 +28,18 @@ async def process_job(
 ) -> bool:
     """Process a single CallJob end-to-end.
 
-    Returns True if successfully completed, False if failed.
+    Returns True if successfully completed, False if failed or skipped.
     """
+    if not CALLE_API_KEY:
+        # Leave the job pending so it is processed once credentials are set.
+        # Guarded again in run_worker_loop so we never busy-loop on this.
+        logger.warning(
+            "Skipping job_id=%s: CALLE_API_KEY is not configured. "
+            "Set it in backend/.env and restart the server.",
+            job_id,
+        )
+        return False
+
     job = db.query(CallJob).filter(CallJob.id == job_id).first()
     if not job:
         logger.error("Job id=%s not found in database", job_id)
@@ -56,6 +67,7 @@ async def process_job(
         task_data = get_verified_context_and_task(
             company_id=company.id,
             caller_number=job.caller_number,
+            likely_topic=context_override or "general inquiries and support",
             context_override=context_override,
             )
         task = task_data["task"]
@@ -111,6 +123,13 @@ async def run_worker_loop(
 
     while max_iterations is None or iterations < max_iterations:
         iterations += 1
+
+        if not CALLE_API_KEY:
+            # Pause silently-ish (logged once on start) until credentials exist,
+            # so we never churn pending jobs in a tight loop.
+            await asyncio.sleep(max(poll_interval, 5.0))
+            continue
+
         job_id = dequeue()
         if job_id is not None:
             logger.info("Worker picked up job_id=%s", job_id)

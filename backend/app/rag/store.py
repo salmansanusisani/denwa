@@ -1,0 +1,40 @@
+"""In-memory cosine-similarity vector store.
+
+Per-company so retrieval never crosses companies.
+
+Vectors are treated as L2-normalised (see ``app.rag.embedder``), so cosine
+similarity is just the dot product.
+"""
+from __future__ import annotations
+
+import numpy as np
+
+_store: dict[int, list[tuple[str, list[float]]]] = {}  # company_id -> [(text, vector)]
+
+
+def add(company_id: int, text: str, vector: list[float]) -> None:
+    """Store one piece of text's vector for a company (appends, keeps insert order)."""
+    _store.setdefault(company_id, []).append((text, list(vector)))
+
+
+def top_k(company_id: int, query_vector: list[float], k: int = 5) -> list[str]:
+    """Return the top-k most similar chunk texts for a company by cosine similarity."""
+    items = _store.get(company_id)
+    if not items:
+        return []
+    q = np.asarray(query_vector, dtype=np.float32)
+    scored = [(float(np.dot(q, np.asarray(v, dtype=np.float32))), t) for t, v in items]
+    scored.sort(key=lambda s: s[0], reverse=True)
+    return [text for _score, text in scored[:k]]
+
+
+def size(company_id: int | None = None) -> int:
+    """Number of stored chunks (optionally filtered by company)."""
+    if company_id is None:
+        return sum(len(items) for items in _store.values())
+    return len(_store.get(company_id, []))
+
+
+def clear() -> None:
+    """Reset all data (used at startup to rebuild from the database)."""
+    _store.clear()

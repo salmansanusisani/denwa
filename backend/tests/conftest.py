@@ -21,6 +21,7 @@ os.environ["WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS"] = "300"
 os.environ["CALLE_API_KEY"] = "test_calle_api_key"
 os.environ["CALLE_BASE_URL"] = "https://mock-calle.test"
 os.environ["CALLE_DEFAULT_FALLBACK_REGION"] = "US"
+os.environ["WORKER_ENABLED"] = "false"
 
 from app.db.models import Base, Company
 from app.db.database import get_db

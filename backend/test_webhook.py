@@ -21,6 +21,7 @@ _public_key_b64 = _signing_key.verify_key.encode(encoder=Base64Encoder).decode("
 
 os.environ["TELNYX_PUBLIC_KEY"] = _public_key_b64
 os.environ["WEBHOOK_SKIP_SIGNATURE_CHECK"] = "false"
+os.environ["WORKER_ENABLED"] = "false"
 os.environ["DATABASE_URL"] = "sqlite:///./test_webhook.db"
 
 if os.path.exists("./test_webhook.db"):

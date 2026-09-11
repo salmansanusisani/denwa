@@ -1,8 +1,9 @@
-"""Document upload — proxies to the AI/ML ingestion pipeline and persists documents."""
+"""Document upload — chunks and embeds via the RAG pipeline, persists documents."""
 import json
 import logging
 from typing import List, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
@@ -42,19 +43,16 @@ async def upload_document(
     db.commit()
     db.refresh(doc)
 
-    # Attempt to chunk document for AI/ML retrieval
+    # Chunk + embed the document and store real vectors so the index is durable.
     chunks_created = 0
     try:
-        # Simple sliding/paragraph chunking fallback if ai-ml module is not loaded
-        raw_paragraphs = [p.strip() for p in raw_text.split("\n\n") if p.strip()]
-        if not raw_paragraphs and raw_text.strip():
-            raw_paragraphs = [raw_text.strip()]
+        from app.rag.ingest import ingest_for_company
 
-        for p in raw_paragraphs:
+        for text, vector in ingest_for_company(company.id, raw_text):
             chunk = Chunk(
                 document_id=doc.id,
-                text=p,
-                embedding_vector=json.dumps([]),
+                text=text,
+                embedding_vector=json.dumps(vector),
             )
             db.add(chunk)
             chunks_created += 1
@@ -90,12 +88,22 @@ def list_documents(
         raise HTTPException(status_code=404, detail=f"Company with id {company_id} not found")
 
     docs = db.query(Document).filter(Document.company_id == company_id).all()
+    counts = {
+        row[0]: row[1]
+        for row in db.query(Chunk.document_id, func.count(Chunk.id))
+        .filter(Chunk.document_id.in_([d.id for d in docs]))
+        .group_by(Chunk.document_id)
+        .all()
+    } if docs else {}
+
     return [
         {
             "id": d.id,
             "company_id": d.company_id,
             "filename": d.filename,
             "uploaded_at": d.uploaded_at.isoformat() if d.uploaded_at else None,
+            "chunks_count": counts.get(d.id, 0),
+            "status": "Active" if counts.get(d.id, 0) else "Processing",
         }
         for d in docs
     ]

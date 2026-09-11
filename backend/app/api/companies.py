@@ -1,5 +1,5 @@
 """Company CRUD - create company (onboarding form lands here)."""
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -41,6 +41,25 @@ def create_company(payload: CompanyCreate, db: Session = Depends(get_db)):
     db.add(company)
     db.commit()
     db.refresh(company)
+    return company
+
+
+@router.get("/lookup", response_model=CompanyOut)
+def lookup_company(
+    phone_number: str = Query(..., description="The business number to look up (E.164, e.g. +12125550101)."),
+    db: Session = Depends(get_db),
+):
+    """Find a company by its registered business number. Used to sign back into
+    an existing workspace without credentials."""
+    normalized = normalize_phone_number(phone_number)
+    if normalized is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid phone_number format. Please include the country code (e.g. +12125550101).",
+        )
+    company = db.query(Company).filter(Company.phone_number == normalized).first()
+    if company is None:
+        raise HTTPException(status_code=404, detail="No company is registered for this phone number.")
     return company
 
 

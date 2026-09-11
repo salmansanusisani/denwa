@@ -17,5 +17,12 @@ build/
 *.db
 *.sqlite3
 
+# logs
+*.log
+
+# build/test caches
+*.tsbuildinfo
+.pytest_cache/
+
 # misc
 .DS_Store

@@ -1,6 +1,26 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { api } from './services/api';
+import type { ApiDocument, CallJob, Company, ConfigStatus } from './types';
 import './styles.css';
+
+type SavedCompany = { id: number; name: string; phone_number: string };
+const RECENT_KEY = 'denwa_recent_companies';
+
+function readRecent(): SavedCompany[] {
+  try {
+    const raw = localStorage.getItem(RECENT_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? parsed.filter((p): p is SavedCompany => !!p && typeof p.id === 'number' && typeof p.name === 'string')
+      : [];
+  } catch { return []; }
+}
+
+function writeRecent(list: SavedCompany[]) {
+  try { localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, 5))); } catch { /* ignore */ }
+}
 
 type IconName =
   | 'grid' | 'phone' | 'history' | 'book' | 'numbers' | 'follow' | 'chart' | 'settings'
@@ -56,36 +76,38 @@ const navItems: { label: string; icon: IconName }[] = [
   { label: 'Team', icon: 'team' },
 ];
 
-const calls = [
-  { caller: '+1 (555) 123-4567', business: '+1 (212) 555-0101', time: 'May 24, 10:21 AM', duration: '04:32', status: 'Processing' },
-  { caller: '+1 (555) 987-6543', business: '+1 (212) 555-0101', time: 'May 24, 09:15 AM', duration: '03:12', status: 'Completed' },
-  { caller: '+1 (555) 246-8101', business: '+1 (212) 555-0101', time: 'May 24, 08:42 AM', duration: '02:45', status: 'Completed' },
-  { caller: '+1 (555) 135-7911', business: '+1 (212) 555-0101', time: 'May 24, 07:33 AM', duration: '05:01', status: 'Completed' },
-  { caller: '+1 (555) 864-2000', business: '+1 (212) 555-0101', time: 'May 24, 06:11 AM', duration: '01:22', status: 'Requires Follow-up' },
-];
+const STORAGE_KEY = 'denwa_company_id';
 
-const history = [
-  { caller: '+1 (555) 123-4567', time: 'May 24, 10:23 AM', duration: '04:32', resolution: 'Answered', status: 'Completed' },
-  { caller: '+1 (555) 987-6543', time: 'May 24, 09:10 AM', duration: '03:12', resolution: 'Answered', status: 'Completed' },
-  { caller: '+1 (555) 246-8101', time: 'May 24, 08:45 AM', duration: '02:45', resolution: 'Requires Follow-up', status: 'Completed' },
-  { caller: '+1 (555) 135-7911', time: 'May 24, 07:36 AM', duration: '05:01', resolution: 'Answered', status: 'Completed' },
-  { caller: '+1 (555) 864-2000', time: 'May 24, 06:14 AM', duration: '01:22', resolution: 'Requires Follow-up', status: 'Requires Follow-up' },
-  { caller: '+1 (555) 678-1111', time: 'May 23, 02:15 PM', duration: '—', resolution: '—', status: 'Open' },
-];
+const statusLabel: Record<string, string> = {
+  pending: 'Queued',
+  in_progress: 'In Progress',
+  completed: 'Completed',
+  failed: 'Failed',
+};
 
-const documents = [
-  ['General FAQs', 'FAQ', 'Active', '45', 'May 20, 2025'],
-  ['Pricing Guide 2025', 'Pricing', 'Active', '32', 'May 18, 2025'],
-  ['Return & Refund Policy', 'Policy', 'Active', '28', 'May 15, 2025'],
-  ['Shipping Information', 'Operations', 'Active', '18', 'May 10, 2025'],
-  ['Product Catalog', 'Operations', 'Active', '55', 'May 08, 2025'],
-];
+const followUpLabel = (c: CallJob) => {
+  if (c.result?.needs_human_followup) return 'Requires Follow-up';
+  if (c.result?.resolved) return 'Answered';
+  return statusLabel[c.status] ?? c.status;
+};
+
+function toLocalDate(iso: string | null): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
 
 function Logo() {
   return <div className="logoMark"><span>⌁</span><b>Denwa</b></div>;
 }
 
-function Sidebar({ active, setActive, open, onClose }: { active: string; setActive: (v: string) => void; open: boolean; onClose: () => void }) {
+function Status({ children }: { children: string }) {
+  const key = children.toLowerCase();
+  return <span className={`status status-${key.replaceAll(' ', '-').replaceAll('—', '')}`}>{children}</span>;
+}
+
+function Sidebar({ active, setActive, open, onClose, company }: { active: string; setActive: (v: string) => void; open: boolean; onClose: () => void; company: Company | null }) {
   return <>
     {open && <div className="mobileOverlay" onClick={onClose} />}
     <aside className={`sidebar ${open ? 'open' : ''}`}>
@@ -95,30 +117,83 @@ function Sidebar({ active, setActive, open, onClose }: { active: string; setActi
         {navItems.map(item => <button key={item.label} className={`navItem ${active === item.label ? 'active' : ''}`} onClick={() => { setActive(item.label); onClose(); }}><Icon name={item.icon}/><span>{item.label}</span></button>)}
       </nav>
       <div className="accountCard">
-        <div className="avatar">A</div>
-        <div><strong>Acme Company</strong><small>Owner</small></div>
+        <div className="avatar">{(company?.name ?? 'A').charAt(0).toUpperCase()}</div>
+        <div><strong>{company?.name ?? 'Not set up'}</strong><small>Owner</small></div>
         <Icon name="chevron" size={16}/>
       </div>
     </aside>
   </>;
 }
 
-function Header({ onMenu, active }: { onMenu: () => void; active: string }) {
+function Header({ onMenu, active, onLogout }: { onMenu: () => void; active: string; onLogout: () => void }) {
   return <header className="topbar">
     <button className="menuBtn" onClick={onMenu}><Icon name="menu" size={21}/></button>
     <div><div className="crumb">Denwa <span>/</span> {active}</div><h1>{active}</h1></div>
-    <div className="headerRight"><div className="datePill"><Icon name="calendar" size={16}/> May 18 – May 24, 2025 <Icon name="chevron" size={14}/></div><div className="userDot">A</div></div>
+    <div className="headerRight">
+      <button className="logoutBtn" onClick={onLogout} title="Switch business"><Icon name="numbers" size={15}/> Switch</button>
+      <div className="userDot">A</div>
+    </div>
   </header>;
 }
 
-function Status({ children }: { children: string }) {
-  const key = children.toLowerCase();
-  return <span className={`status status-${key.replaceAll(' ', '-').replaceAll('—','')}`}>{children}</span>;
+function LoadingState() {
+  return <div className="loadingState"><span className="spinner" /><p>Loading your Denwa workspace…</p></div>;
 }
 
-function StatCard({ title, value, delta, type }: { title: string; value: string; delta: string; type: 'purple'|'blue'|'green'|'orange' }) {
+function ErrorState({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return <div className="page"><section className="emptyState panel"><div className="emptyIcon"><Icon name="cloud" size={28}/></div><h3>Couldn't reach the backend</h3><p>{message}</p><button className="outlineBtn" onClick={onRetry}>Retry <Icon name="refresh" size={15}/></button></section></div>;
+}
+
+function Onboarding({ onCreate, busy, error, onFindByPhone, findBusy, recent, onSignIn }: { onCreate: (name: string, phone: string) => void; busy: boolean; error: string | null; onFindByPhone: (phone: string) => void; findBusy: boolean; recent: SavedCompany[]; onSignIn: (id: number) => void }) {
+  const [name, setName] = useState('');
+  const [phone, setPhone] = useState('');
+  const [findOpen, setFindOpen] = useState(false);
+  const [findPhone, setFindPhone] = useState('');
+  return <div className="onboarding">
+    <div className="onboardingCard">
+      <Logo />
+      <h2>Connect your business</h2>
+      <p>Register your business number so Denwa can turn missed calls into AI callbacks.</p>
+      <form onSubmit={(e) => { e.preventDefault(); onCreate(name, phone); }}>
+        <label>Business name<input value={name} placeholder="e.g. Acme Coffee Roasters" onChange={(e) => setName(e.target.value)} required /></label>
+        <label>Business phone number<input value={phone} placeholder="e.g. +12125550101" onChange={(e) => setPhone(e.target.value)} required /></label>
+        {error && <div className="formError">{error}</div>}
+        <button className="primaryBtn" disabled={busy} type="submit">{busy ? 'Creating…' : 'Create workspace'} {!busy && <Icon name="chevron" size={13}/>}</button>
+      </form>
+      <small className="onboardingHint">Use a real number in E.164 format (with country code) — Telephony webhooks route inbound missed calls to it.</small>
+
+      {recent.length > 0 && (
+        <>
+          <div className="onboardingDivider"><span>or return to a saved workspace</span></div>
+          <div className="savedWorkspaces">
+            {recent.map(w => (
+              <button key={w.id} className="accountRow" onClick={() => onSignIn(w.id)} disabled={busy || findBusy}>
+                <span className="accountIcon"><Icon name="grid" size={14}/></span>
+                <span className="accountMeta"><span className="accountName">{w.name}</span><span className="accountPhone">{w.phone_number}</span></span>
+                <Icon name="chevron" size={14}/>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+
+      <div className="onboardingDivider"><span>own a business already?</span></div>
+      {findOpen ? (
+        <form className="findForm" onSubmit={(e) => { e.preventDefault(); onFindByPhone(findPhone); }}>
+          <label>Business phone number<input value={findPhone} placeholder="e.g. +12125550101" onChange={(e) => setFindPhone(e.target.value)} required autoFocus /></label>
+          <button className="outlineBtn" disabled={findBusy || busy} type="submit">{findBusy ? 'Looking up…' : 'Sign back in'} <Icon name="search" size={14}/></button>
+        </form>
+      ) : (
+        <button className="findLink" onClick={() => setFindOpen(true)} disabled={busy || findBusy}><Icon name="search" size={14}/> Find my business by phone number</button>
+      )}
+    </div>
+  </div>;
+}
+
+function StatCard({ title, value, delta, type, icon }: { title: string; value: string; delta: string; type: 'purple'|'blue'|'green'|'orange'; icon?: IconName }) {
   const up = delta.includes('↑');
-  return <div className={`statCard ${type}`}><div className="statIcon"><Icon name={type === 'green' ? 'check' : type === 'orange' ? 'follow' : 'phone'} size={16}/></div><div className="statTitle">{title}</div><div className="statValue">{value}</div><div className={`delta ${up ? 'up' : 'down'}`}>{up ? <Icon name="arrowUp" size={12}/> : <Icon name="arrowDown" size={12}/>} {delta.replace('↑ ','').replace('↓ ','')}</div><span className="muted">vs last 7 days</span></div>;
+  const glyph = icon ?? (type === 'green' ? 'check' : type === 'orange' ? 'follow' : 'phone');
+  return <div className={`statCard ${type}`}><div className="statIcon"><Icon name={glyph} size={16}/></div><div className="statTitle">{title}</div><div className="statValue">{value}</div><div className={`delta ${up ? 'up' : 'down'}`}>{up ? <Icon name="arrowUp" size={12}/> : <Icon name="arrowDown" size={12}/>} {delta.replace('↑ ', '').replace('↓ ', '')}</div><span className="muted">from your call log</span></div>;
 }
 
 function Chart() {
@@ -129,72 +204,343 @@ function Chart() {
       <path d="M10 184 C70 172, 80 160, 140 150 S205 120, 255 145 S320 125, 365 135 S425 120, 470 110 S535 128, 590 94" className="line blue"/>
       <path d="M10 196 C65 170, 100 178, 145 188 S205 168, 255 182 S315 155, 365 142 S425 176, 470 160 S535 171, 590 145" className="line green"/>
     </svg>
-    <div className="chartLabels">{['May 18','May 19','May 20','May 21','May 22','May 23','May 24'].map(x=><span key={x}>{x}</span>)}</div>
+    <div className="chartLabels">{['Day 1','Day 2','Day 3','Day 4','Day 5','Day 6','Day 7'].map(x=><span key={x}>{x}</span>)}</div>
   </div>;
 }
 
-function Dashboard({ onViewCall }: { onViewCall: () => void }) {
+function followUps(calls: CallJob[]) {
+  return calls.filter(c => c.result?.needs_human_followup);
+}
+
+function Dashboard({ company, calls, onViewCall, onOpen, onConfigure }: { company: Company; calls: CallJob[]; onViewCall: () => void; onOpen: (id: number) => void; onConfigure: () => void }) {
+  const total = calls.length;
+  const done = calls.filter(c => c.status === 'completed' && c.result).length;
+  const resolved = calls.filter(c => c.result?.resolved).length;
+  const needsHuman = followUps(calls).length;
+  const recent = calls.slice(0, 5);
+  const open = followUps(calls).slice(0, 3);
+
   return <div className="page dashboardPage">
-    <div className="pageIntro"><div><h2>Good morning, Acme Company 👋</h2><p>Here's what's happening with your calls today.</p></div></div>
+    <div className="pageIntro"><div><h2>Welcome to {company.name} 👋</h2><p>Here's what's happening with your calls today.</p></div></div>
     <div className="statsGrid">
-      <StatCard title="Missed Calls" value="24" delta="↑ 12%" type="purple"/>
-      <StatCard title="Callbacks Completed" value="19" delta="↑ 8%" type="blue"/>
-      <StatCard title="Resolved" value="14" delta="↑ 10%" type="green"/>
-      <StatCard title="Requires Follow-up" value="5" delta="↓ 5%" type="orange"/>
+      <StatCard title="Missed Calls" value={String(total)} delta={`Total`} type="purple" icon="phone"/>
+      <StatCard title="Callbacks Completed" value={String(done)} delta={done > 0 ? '↑ Completed' : 'No data yet'} type="blue" icon="history"/>
+      <StatCard title="Resolved" value={String(resolved)} delta={resolved > 0 ? '↑ Resolved' : 'No data yet'} type="green" icon="check"/>
+      <StatCard title="Requires Follow-up" value={String(needsHuman)} delta={needsHuman > 0 ? '↓ Needs attention' : 'All clear'} type="orange" icon="follow"/>
     </div>
     <div className="dashboardGrid">
-      <section className="panel recentPanel"><div className="panelHead"><h3>Recent Missed Calls</h3><button className="textBtn" onClick={onViewCall}>View all</button></div><div className="desktopOnly tableScroll"><table><thead><tr><th>Caller</th><th>Business Number</th><th>Time</th><th>Status</th></tr></thead><tbody>{calls.map(c=><tr key={c.caller}><td><span className="caller"><span className="tinyPhone"><Icon name="phone" size={11}/></span>{c.caller}</span></td><td>{c.business}</td><td>{c.time}</td><td><Status>{c.status}</Status></td></tr>)}</tbody></table></div><div className="mobileList">{calls.map(c=><button className="mobileCallCard" key={c.caller} onClick={onViewCall}><span className="mobileCallIcon"><Icon name="phone" size={14}/></span><span className="mobileCallMain"><strong>{c.caller}</strong><small>{c.time}</small></span><Status>{c.status}</Status><Icon name="chevron" size={15}/></button>)}</div></section>
-      <section className="panel chartPanel"><div className="panelHead"><h3>Callback Performance</h3><button className="selectBtn">Last 7 days <Icon name="chevron" size={13}/></button></div><Chart/><div className="legend"><span><i className="dot purpleDot"/> Missed Calls</span><span><i className="dot blueDot"/> Callbacks</span><span><i className="dot greenDot"/> Resolved</span></div></section>
+      <section className="panel recentPanel"><div className="panelHead"><h3>Recent Missed Calls</h3><button className="textBtn" onClick={onViewCall}>View all</button></div>{recent.length === 0 ? <div className="emptyInline">No missed-call events yet.</div> : <>
+        <div className="desktopOnly tableScroll"><table><thead><tr><th>Caller</th><th>Received</th><th>Status</th></tr></thead><tbody>{recent.map(c => <tr key={c.id}><td><span className="caller"><span className="tinyPhone"><Icon name="phone" size={11}/></span>{c.caller_number}</span></td><td>{toLocalDate(c.created_at)}</td><td><Status>{followUpLabel(c)}</Status></td></tr>)}</tbody></table></div>
+        <div className="mobileList">{recent.map(c => <button className="mobileCallCard" key={c.id} onClick={() => onOpen(c.id)}><span className="mobileCallIcon"><Icon name="phone" size={14}/></span><span className="mobileCallMain"><strong>{c.caller_number}</strong><small>{toLocalDate(c.created_at)}</small></span><Status>{followUpLabel(c)}</Status><Icon name="chevron" size={15}/></button>)}</div>
+      </>}</section>
+      <section className="panel chartPanel"><div className="panelHead"><h3>Callback Performance</h3><span className="selectBtn">Last 7 days</span></div><Chart/><div className="legend"><span><i className="dot purpleDot"/> Missed Calls</span><span><i className="dot blueDot"/> Completed</span><span><i className="dot greenDot"/> Resolved</span></div></section>
     </div>
     <div className="dashboardGrid bottomGrid">
-      <section className="panel"><div className="panelHead"><h3>Follow-up Cases</h3><button className="textBtn">View all</button></div><div className="desktopOnly tableScroll"><table><thead><tr><th>Caller</th><th>Issue</th><th>Callback Time</th><th>Status</th></tr></thead><tbody><tr><td>+1 (555) 678-1111</td><td>Question about pricing</td><td>May 23, 02:15 PM</td><td><Status>Open</Status></td></tr><tr><td>+1 (555) 222-3333</td><td>Product availability</td><td>May 23, 11:42 AM</td><td><Status>Open</Status></td></tr><tr><td>+1 (555) 444-5555</td><td>Return & refund policy</td><td>May 22, 04:33 PM</td><td><Status>Open</Status></td></tr></tbody></table></div><div className="mobileList compactList"><div className="followCard"><strong>+1 (555) 678-1111</strong><span>Question about pricing</span><small>May 23, 02:15 PM</small><Status>Open</Status></div><div className="followCard"><strong>+1 (555) 222-3333</strong><span>Product availability</span><small>May 23, 11:42 AM</small><Status>Open</Status></div><div className="followCard"><strong>+1 (555) 444-5555</strong><span>Return & refund policy</span><small>May 22, 04:33 PM</small><Status>Open</Status></div></div></section>
-      <section className="panel phonePanel"><div className="panelHead"><h3>Your Phone Number</h3></div><div className="phoneNumber">+1 (212) 555-0101</div><Status>Connected</Status><div className="provider"><span>Twilio</span><button className="outlineBtn">Manage Numbers <Icon name="chevron" size={13}/></button></div></section>
+      <section className="panel"><div className="panelHead"><h3>Follow-up Cases</h3><button className="textBtn" onClick={() => onOpen(0)}>View all</button></div>{open.length === 0 ? <div className="emptyInline">Nothing needs human attention right now.</div> : <div className="mobileList compactList">{open.map(c => <div className="followCard" key={c.id}><strong>{c.caller_number}</strong><span>{c.result?.question_asked || 'Unanswered question'}</span><small>{toLocalDate(c.created_at)}</small><Status>Requires Follow-up</Status></div>)}</div>}</section>
+      <section className="panel phonePanel"><div className="panelHead"><h3>Your Phone Number</h3></div><div className="phoneNumber">{company.phone_number}</div><Status>Registered</Status><div className="provider"><span>CALL-E + Telnyx</span><button className="outlineBtn" onClick={onConfigure}>Configure <Icon name="settings" size={13}/></button></div></section>
     </div>
   </div>;
 }
 
-function MissedCalls({ onOpen }: { onOpen: () => void }) {
-  return <div className="page"><div className="pageTitleRow"><div><h2>Missed Calls</h2><p>Monitor real missed-call events and callback progress.</p></div><button className="primaryBtn"><Icon name="refresh" size={16}/> Refresh</button></div><section className="panel"><div className="toolbar"><div className="searchBox"><Icon name="search" size={17}/><input placeholder="Search by phone number or question..."/></div><button className="selectBtn">May 18 – May 24, 2025 <Icon name="calendar" size={14}/></button><button className="selectBtn">All Status <Icon name="chevron" size={13}/></button></div><div className="desktopOnly tableScroll"><table className="fullTable"><thead><tr><th>Caller</th><th>Received</th><th>Callback</th><th>Duration</th><th>Status</th><th>Action</th></tr></thead><tbody>{calls.map(c=><tr key={c.caller}><td><strong>{c.caller}</strong><small>{c.business}</small></td><td>{c.time}</td><td>{c.status === 'Processing' ? 'In progress' : 'Completed'}</td><td>{c.duration}</td><td><Status>{c.status}</Status></td><td><button className="linkBtn" onClick={onOpen}>View</button></td></tr>)}</tbody></table></div><div className="mobileList pageList">{calls.map(c=><button className="dataCard" key={c.caller} onClick={onOpen}><div className="dataCardTop"><span><strong>{c.caller}</strong><small>{c.business}</small></span><Status>{c.status}</Status></div><div className="dataCardMeta"><span><b>Received</b>{c.time}</span><span><b>Callback</b>{c.status === 'Processing' ? 'In progress' : 'Completed'}</span><span><b>Duration</b>{c.duration}</span></div><span className="cardAction">View call <Icon name="external" size={13}/></span></button>)}</div></section></div>;
+function MissedCalls({ calls, onOpen, onRefresh, refreshing }: { calls: CallJob[]; onOpen: (id: number) => void; onRefresh: () => void; refreshing: boolean }) {
+  return <div className="page"><div className="pageTitleRow"><div><h2>Missed Calls</h2><p>Monitor real missed-call events and callback progress.</p></div><button className="primaryBtn" onClick={onRefresh} disabled={refreshing}><Icon name="refresh" size={16}/> {refreshing ? 'Refreshing…' : 'Refresh'}</button></div><section className="panel">{calls.length === 0 ? <div className="emptyState"><div className="emptyIcon"><Icon name="phone" size={28}/></div><h3>No missed calls yet</h3><p>Telnyx webhooks enqueue a callback here when a real customer call is missed. You can also create a test job from the API.</p></div> : <>
+      <div className="desktopOnly tableScroll"><table className="fullTable"><thead><tr><th>Caller</th><th>Received</th><th>Status</th><th>Action</th></tr></thead><tbody>{calls.map(c => <tr key={c.id}><td><strong>{c.caller_number}</strong></td><td>{toLocalDate(c.created_at)}</td><td><Status>{followUpLabel(c)}</Status></td><td><button className="linkBtn" onClick={() => onOpen(c.id)}>View</button></td></tr>)}</tbody></table></div>
+      <div className="mobileList pageList">{calls.map(c => <button className="dataCard" key={c.id} onClick={() => onOpen(c.id)}><div className="dataCardTop"><span><strong>{c.caller_number}</strong><small>{toLocalDate(c.created_at)}</small></span><Status>{followUpLabel(c)}</Status></div><span className="cardAction">View call <Icon name="external" size={13}/></span></button>)}</div>
+    </>}</section></div>;
 }
 
-function CallDetail({ onBack }: { onBack: () => void }) {
-  return <div className="page"><div className="detailTop"><button className="backBtn" onClick={onBack}><Icon name="back" size={17}/> Back to Missed Calls</button><button className="primaryBtn">Mark as Reviewed <Icon name="chevron" size={13}/></button></div><section className="callHero panel"><div className="bigPhone"><Icon name="phone" size={25}/></div><div><h2>+1 (555) 123-4567</h2><p>May 24, 2025 at 10:21 AM</p></div><div className="heroMeta"><span>Status</span><Status>Completed</Status><span>Call Duration</span><strong>04:32</strong></div></section><div className="detailGrid"><section className="panel"><h3>Call Summary</h3><div className="summaryItem"><label>Customer Question</label><p>Do you have the 15-inch laptop in stock and what is the price?</p></div><div className="summaryItem"><label>AI Answer Provided</label><p>Yes, the 15-inch laptop is currently in stock. The price is $1,249.99 including tax.</p></div><div className="summaryItem"><label>Resolution</label><p><Status>Answered</Status></p></div><div className="summaryItem"><label>Follow-up Required</label><p>No</p></div><div className="confidence"><div><span>Confidence Score</span><strong>92%</strong></div><div className="progress"><i style={{width:'92%'}}/></div></div></section><section className="sideDetail"><div className="panel recording"><h3>Call Recording</h3><div className="player"><button><Icon name="play" size={15}/></button><span>0:00 / 4:32</span><div className="playerBar"><i/></div><span>◖</span><button className="iconBtn"><Icon name="download" size={17}/></button></div></div><div className="panel"><h3>Call Timeline</h3><Timeline/></div></section></div></div>;
+function CallHistory({ calls, onOpen }: { calls: CallJob[]; onOpen: (id: number) => void }) {
+  return <div className="page"><div className="pageTitleRow"><div><h2>Call History</h2><p>View all your callback interactions and results.</p></div></div><section className="panel">{calls.length === 0 ? <div className="emptyState"><div className="emptyIcon"><Icon name="history" size={28}/></div><h3>No callbacks yet</h3><p>Completed AI callbacks with their structured results will appear here.</p></div> :
+    <div className="tableScroll"><table className="fullTable"><thead><tr><th>Caller</th><th>Callback Time</th><th>Resolution</th><th>Status</th><th>Action</th></tr></thead><tbody>{calls.map(c => <tr key={c.id}><td>{c.caller_number}</td><td>{toLocalDate(c.created_at)}</td><td>{followUpLabel(c)}</td><td><Status>{statusLabel[c.status] ?? c.status}</Status></td><td><button className="linkBtn" onClick={() => onOpen(c.id)}>View</button></td></tr>)}</tbody></table></div>
+      }</section></div>;
 }
 
-function Timeline() { const items=[['Missed call received','May 24, 10:21 AM'],['Information retrieved','May 24, 10:21 AM'],['Callback initiated','May 24, 10:22 AM'],['Call connected','May 24, 10:23 AM'],['Call completed','May 24, 10:27 AM'],['Result stored','May 24, 10:27 AM']]; return <div className="timeline">{items.map(([a,b])=><div className="timelineItem" key={a}><span className="timelineDot"/><div><strong>{a}</strong><small>{b}</small></div></div>)}</div>; }
-
-function CallHistory() {
-  return <div className="page"><div className="pageTitleRow"><div><h2>Call History</h2><p>View all your callback interactions and results.</p></div><button className="outlineBtn"><Icon name="download" size={15}/> Export <Icon name="chevron" size={13}/></button></div><section className="panel"><div className="toolbar"><div className="searchBox"><Icon name="search" size={17}/><input placeholder="Search by phone number or question..."/></div><button className="selectBtn">May 18 – May 24, 2025 <Icon name="calendar" size={14}/></button><button className="selectBtn">All Status <Icon name="chevron" size={13}/></button></div><div className="desktopOnly tableScroll"><table className="fullTable"><thead><tr><th>Caller</th><th>Callback Time</th><th>Duration</th><th>Resolution</th><th>Status</th><th>Actions</th></tr></thead><tbody>{history.map((c,i)=><tr key={i}><td>{c.caller}</td><td>{c.time}</td><td>{c.duration}</td><td>{c.resolution}</td><td><Status>{c.status}</Status></td><td><button className="linkBtn">View</button> <button className="iconBtn"><Icon name="more" size={15}/></button></td></tr>)}</tbody></table></div><div className="mobileList pageList">{history.map((c,i)=><div className="historyCard" key={i}><div className="dataCardTop"><span><strong>{c.caller}</strong><small>{c.time}</small></span><Status>{c.status}</Status></div><div className="historyStats"><span><b>Duration</b>{c.duration}</span><span><b>Resolution</b>{c.resolution}</span></div><button className="cardAction">View details <Icon name="external" size={13}/></button></div>)}</div><div className="pagination"><span>Showing 1 to 6 of 24 results</span><div><button>‹</button><button className="current">1</button><button>2</button><button>3</button><button>4</button><button>…</button><button>›</button></div></div></section></div>;
+function FollowUpCases({ calls, onOpen }: { calls: CallJob[]; onOpen: (id: number) => void }) {
+  const items = followUps(calls);
+  return <div className="page"><div className="pageTitleRow"><div><h2>Follow-up Cases</h2><p>Track callbacks that need human attention.</p></div></div><section className="panel">{items.length === 0 ? <div className="emptyState"><div className="emptyIcon"><Icon name="follow" size={28}/></div><h3>No follow-ups needed</h3><p>Callbacks that the AI couldn't resolve will be listed here.</p></div> : <div className="tableScroll"><table className="fullTable"><thead><tr><th>Caller</th><th>Question</th><th>Received</th><th>Status</th></tr></thead><tbody>{items.map(c => <tr key={c.id} onClick={() => onOpen(c.id)} style={{ cursor: 'pointer' }}><td>{c.caller_number}</td><td>{c.result?.question_asked || '—'}</td><td>{toLocalDate(c.created_at)}</td><td><Status>Requires Follow-up</Status></td></tr>)}</tbody></table></div>}</section></div>;
 }
 
-function KnowledgeBase() {
-  return <div className="page"><div className="pageTitleRow"><div><h2>Knowledge Base</h2><p>Upload and manage your business knowledge and documents.</p></div><button className="primaryBtn"><Icon name="upload" size={16}/> Upload Document</button></div><section className="panel"><div className="tabs"><button className="active">All Documents</button><button>FAQs</button><button>Pricing</button><button>Policies</button><button>Operations</button></div><div className="desktopOnly tableScroll"><table className="fullTable"><thead><tr><th>Document Name</th><th>Type</th><th>Status</th><th>Chunks</th><th>Last Updated</th><th>Actions</th></tr></thead><tbody>{documents.map(d=><tr key={d[0]}><td><strong>{d[0]}</strong></td><td>{d[1]}</td><td><Status>{d[2]}</Status></td><td>{d[3]}</td><td>{d[4]}</td><td><button className="iconBtn"><Icon name="more" size={15}/></button></td></tr>)}</tbody></table></div><div className="mobileList pageList">{documents.map(d=><div className="documentCard" key={d[0]}><div><strong>{d[0]}</strong><small>{d[1]} · Updated {d[4]}</small></div><div className="documentMeta"><span><b>Chunks</b>{d[3]}</span><Status>{d[2]}</Status><button className="iconBtn"><Icon name="more" size={15}/></button></div></div>)}</div></section><div className="infoBanner"><div className="infoIcon"><Icon name="brain" size={19}/></div><div><strong>Grounded AI answers</strong><p>Denwa should answer from approved company knowledge only. Unsupported questions are routed to human follow-up.</p></div></div></div>;
+function CallDetail({ jobId, onBack }: { jobId: number; onBack: () => void }) {
+  const [job, setJob] = useState<CallJob | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    api.getCall(jobId)
+      .then(j => { if (alive) setJob(j); })
+      .catch(e => { if (alive) setError(String(e.message || e)); });
+    return () => { alive = false; };
+  }, [jobId]);
+
+  if (error) return <div className="page"><section className="emptyState panel"><div className="emptyIcon"><Icon name="cloud" size={28}/></div><h3>Couldn't load this call</h3><p>{error}</p><button className="outlineBtn" onClick={onBack}>Back</button></section></div>;
+  if (!job) return <div className="page"><LoadingState/></div>;
+
+  return <div className="page"><div className="detailTop"><button className="backBtn" onClick={onBack}><Icon name="back" size={17}/> Back</button></div>
+    <section className="callHero panel"><div className="bigPhone"><Icon name="phone" size={25}/></div><div><h2>{job.caller_number}</h2><p>{toLocalDate(job.created_at)}</p></div><div className="heroMeta"><span>Status</span><Status>{followUpLabel(job)}</Status></div></section>
+    <div className="detailGrid"><section className="panel"><h3>Call Summary</h3><div className="summaryItem"><label>Customer Question</label><p>{job.result?.question_asked || 'No structured result received yet.'}</p></div><div className="summaryItem"><label>AI Answer Provided</label><p>{job.result?.answer_given || '—'}</p></div><div className="summaryItem"><label>Resolution</label><p><Status>{followUpLabel(job)}</Status></p></div><div className="summaryItem"><label>Follow-up Required</label><p>{job.result?.needs_human_followup ? 'Yes' : 'No'}</p></div>{job.result?.transcript_url ? <div className="summaryItem"><label>Transcript</label><p><a href={job.result.transcript_url} target="_blank" rel="noreferrer">{job.result.transcript_url} <Icon name="external" size={12}/></a></p></div> : null}</section>
+      <section className="sideDetail"><div className="panel"><h3>Call Timeline</h3><div className="timeline">
+        <div className="timelineItem"><span className="timelineDot"/><div><strong>Missed call received</strong><small>{toLocalDate(job.created_at) || '—'}</small></div></div>
+        <div className="timelineItem"><span className="timelineDot"/><div><strong>AI callback {job.status === 'completed' ? 'completed' : job.status}</strong><small>{job.status === 'completed' ? 'Result stored' : '—'}</small></div></div>
+      </div></div></section>
+    </div>
+  </div>;
+}
+
+function KnowledgeBase({ documents, companyId, onUpload, uploading }: { documents: ApiDocument[]; companyId: number; onUpload: (file: File) => void; uploading: boolean }) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  return <div className="page"><div className="pageTitleRow"><div><h2>Knowledge Base</h2><p>Upload and manage your business knowledge and documents.</p></div><button className="primaryBtn" disabled={uploading} onClick={() => fileRef.current?.click()}><Icon name="upload" size={16}/> {uploading ? 'Uploading…' : 'Upload Document'}</button><input ref={fileRef} type="file" accept=".txt,.md,.csv" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) onUpload(f); e.target.value = ''; }} /></div><section className="panel">{documents.length === 0 ? <div className="emptyState"><div className="emptyIcon"><Icon name="book" size={28}/></div><h3>No knowledge documents yet</h3><p>Upload FAQs, policies or product info. Denwa chunks + embeds them and uses only this verified content when answering callbacks.</p></div> : <>
+      <div className="desktopOnly tableScroll"><table className="fullTable"><thead><tr><th>Document Name</th><th>Status</th><th>Chunks</th><th>Uploaded</th></tr></thead><tbody>{documents.map(d => <tr key={d.id}><td><strong>{d.filename}</strong></td><td><Status>{d.status}</Status></td><td>{d.chunks_count}</td><td>{toLocalDate(d.uploaded_at)}</td></tr>)}</tbody></table></div>
+      <div className="mobileList pageList">{documents.map(d => <div className="documentCard" key={d.id}><div><strong>{d.filename}</strong><small>Uploaded {toLocalDate(d.uploaded_at)}</small></div><div className="documentMeta"><span><b>Chunks</b>{d.chunks_count}</span><Status>{d.status}</Status></div></div>)}</div>
+    </>}</section><div className="infoBanner"><div className="infoIcon"><Icon name="brain" size={19}/></div><div><strong>Grounded AI answers</strong><p>Denwa answers from approved company knowledge only. Unsupported questions are routed to human follow-up.</p></div></div></div>;
 }
 
 function GenericPage({ title, desc, icon }: { title: string; desc: string; icon: IconName }) {
-  return <div className="page"><div className="pageTitleRow"><div><h2>{title}</h2><p>{desc}</p></div></div><section className="emptyState panel"><div className="emptyIcon"><Icon name={icon} size={28}/></div><h3>{title} workspace</h3><p>This screen is ready for backend/API integration. The shared frontend contract supports loading, empty, error and retry states.</p><button className="outlineBtn">Configure <Icon name="external" size={15}/></button></section></div>;
+  return <div className="page"><div className="pageTitleRow"><div><h2>{title}</h2><p>{desc}</p></div></div><section className="emptyState panel"><div className="emptyIcon"><Icon name={icon} size={28}/></div><h3>{title} workspace</h3><p>This area is part of the Denwa roadmap — the rest of the app is live with your real data.</p></section></div>;
 }
+
+function ProviderStatus({ title, desc }: { title: string; desc: string }) {
+  const [cfg, setCfg] = useState<ConfigStatus | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const load = useCallback(() => {
+    setErr(null);
+    api.getConfigStatus().then(setCfg).catch(e => setErr(String((e as Error).message || e)));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  if (err) return <div className="page"><div className="pageTitleRow"><div><h2>{title}</h2><p>{desc}</p></div></div><section className="emptyState panel"><div className="emptyIcon"><Icon name="cloud" size={28}/></div><h3>Couldn't load provider status</h3><p>{err}</p><button className="outlineBtn" onClick={load}>Retry <Icon name="refresh" size={15}/></button></section></div>;
+  if (!cfg) return <div className="page"><div className="pageTitleRow"><div><h2>{title}</h2><p>{desc}</p></div></div><LoadingState /></div>;
+
+  const providers: { name: string; icon: IconName; ok: boolean; status: string; note: string; detail: string }[] = [
+    { name: 'CALL-E', icon: 'phone', ok: cfg.call_e_configured, status: cfg.call_e_configured ? 'Connected' : 'No API key', note: 'Outbound AI callback dialer', detail: cfg.call_e_base_url },
+    { name: 'Telnyx', icon: 'numbers', ok: cfg.telnyx_configured, status: cfg.telnyx_configured ? 'Connected' : 'Not connected', note: 'Inbound missed-call webhooks', detail: cfg.signature_check_enabled ? 'Ed25519 signature verification on' : 'Signature check skipped (dev)' },
+    { name: 'Groq', icon: 'brain', ok: cfg.groq_configured, status: cfg.groq_configured ? 'Connected' : 'Fallback mode', note: 'Answer task condensing', detail: cfg.groq_configured ? 'condenses retrieved knowledge' : 'deterministic template fallback' },
+  ];
+
+  return <div className="page">
+    <div className="pageTitleRow"><div><h2>{title}</h2><p>{desc}</p></div></div>
+    <section className="panel phonePanel">
+      <div className="panelHead"><h3>Business Number</h3></div>
+      <div className="phoneNumber">{cfg.business_phone_number || 'Not set in backend/.env'}</div>
+      {cfg.business_phone_registered ? <Status>Registered</Status> : <Status>Not registered</Status>}
+      <div className="provider"><span>{cfg.business_phone_registered
+        ? 'Inbound webhooks route missed calls to this workspace.'
+        : <>This workspace isn't attached to the number yet — sign in with that number to register it.</>}</span></div>
+    </section>
+    <section className="panel">
+      <div className="panelHead"><h3>Providers</h3></div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        {providers.map(p => (
+          <div className="providerRow" key={p.name}>
+            <span className="providerIcon"><Icon name={p.icon} size={15}/></span>
+            <span className="providerBody"><strong>{p.name}</strong><small>{p.note} — {p.detail}</small></span>
+            <span className={`status status-${p.ok ? 'connected' : 'not-connected'}`}>{p.status}</span>
+          </div>
+        ))}
+        <div className="providerRow">
+          <span className="providerIcon"><Icon name="settings" size={15}/></span>
+          <span className="providerBody"><strong>Callback worker</strong><small>Background job loop that dials CALL-E</small></span>
+          <span className={`status status-${cfg.worker_enabled ? 'connected' : 'not-connected'}`}>{cfg.worker_enabled ? 'Running' : 'Disabled'}</span>
+        </div>
+      </div>
+      <small className="onboardingHint">Provider credentials live in <code>backend/.env</code>. Secret values are never exposed here.</small>
+    </section>
+  </div>;
+}
+
+type Toast = { kind: 'success' | 'error'; text: string };
 
 function App() {
+  const [companyId, setCompanyIdState] = useState<number | null>(() => {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? Number(raw) : null;
+  });
+  const setCompanyId = useCallback((id: number | null) => {
+    setCompanyIdState(id);
+    if (id === null) localStorage.removeItem(STORAGE_KEY);
+    else localStorage.setItem(STORAGE_KEY, String(id));
+  }, []);
+
+  const [company, setCompany] = useState<Company | null>(null);
+  const [calls, setCalls] = useState<CallJob[]>([]);
+  const [documents, setDocuments] = useState<ApiDocument[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<Toast | null>(null);
+  const [onboardingBusy, setOnboardingBusy] = useState(false);
+  const [onboardingError, setOnboardingError] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+
   const [active, setActive] = useState('Dashboard');
+  const [detailId, setDetailId] = useState<number | null>(null);
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [detail, setDetail] = useState(false);
-  const content = useMemo(() => {
-    if (detail) return <CallDetail onBack={() => setDetail(false)} />;
-    switch(active) {
-      case 'Dashboard': return <Dashboard onViewCall={() => { setActive('Missed Calls'); setDetail(false); }} />;
-      case 'Missed Calls': return <MissedCalls onOpen={() => setDetail(true)} />;
-      case 'Call History': return <CallHistory />;
-      case 'Knowledge Base': return <KnowledgeBase />;
-      case 'Phone Numbers': return <GenericPage title="Phone Numbers" desc="Connect and monitor the real business number used by Denwa." icon="numbers" />;
-      case 'Follow-up Cases': return <GenericPage title="Follow-up Cases" desc="Track callbacks that need human attention." icon="follow" />;
-      case 'Analytics': return <GenericPage title="Analytics" desc="Measure missed calls, callbacks, resolution and follow-up performance." icon="chart" />;
-      case 'Settings': return <GenericPage title="Settings" desc="Manage business, provider and application configuration." icon="settings" />;
-      case 'Team': return <GenericPage title="Team" desc="Manage the people who can operate this Denwa workspace." icon="team" />;
-      default: return <Dashboard onViewCall={() => setActive('Missed Calls')} />;
+  const [recent, setRecent] = useState<SavedCompany[]>(readRecent);
+  const [findBusy, setFindBusy] = useState(false);
+
+  const rememberCompany = useCallback((comp: Company) => {
+    setRecent(prev => {
+      const next = [{ id: comp.id, name: comp.name, phone_number: comp.phone_number }, ...prev.filter(p => p.id !== comp.id)];
+      writeRecent(next);
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(null), 4000);
+    return () => clearTimeout(t);
+  }, [notice]);
+
+  const refreshData = useCallback(async (showBusy = true) => {
+    if (companyId === null) return;
+    if (showBusy) setRefreshing(true);
+    try {
+      const [callsRes, docsRes] = await Promise.all([
+        api.listCalls(companyId),
+        api.listDocuments(companyId),
+      ]);
+      setCalls(callsRes);
+      setDocuments(docsRes);
+      setError(null);
+    } catch (e) {
+      setError(String((e as Error).message || e));
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
     }
-  }, [active, detail]);
-  return <div className="app"><Sidebar active={active} setActive={v => {setActive(v); setDetail(false);}} open={mobileOpen} onClose={() => setMobileOpen(false)} /><main className="main"><Header onMenu={() => setMobileOpen(true)} active={detail ? 'Missed Call Detail' : active}/>{content}</main></div>;
+  }, [companyId]);
+
+  useEffect(() => {
+    if (companyId === null) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    api.getCompany(companyId)
+      .then(comp => {
+        setCompany(comp);
+        rememberCompany(comp);
+        return refreshData(true);
+      })
+      .then(() => setLoading(false))
+      .catch(e => {
+        setLoading(false);
+        setError(String((e as Error).message || e));
+        setCompanyId(null); // unknown company -> back to onboarding
+      });
+  }, [companyId, refreshData, rememberCompany, setCompanyId]);
+
+  const createWorkspace = useCallback(async (name: string, phone: string) => {
+    setOnboardingBusy(true);
+    setOnboardingError(null);
+    try {
+      const comp = await api.createCompany(name.trim(), phone.trim());
+      setCompany(comp);
+      rememberCompany(comp);
+      setCompanyId(comp.id);
+    } catch (e) {
+      setOnboardingError(String((e as Error).message || e));
+    } finally {
+      setOnboardingBusy(false);
+    }
+  }, [rememberCompany, setCompanyId]);
+
+  const signInCompany = useCallback(async (id: number) => {
+    setOnboardingError(null);
+    try {
+      const comp = await api.getCompany(id);
+      setCompany(comp);
+      rememberCompany(comp);
+      setCompanyId(id);
+    } catch (e) {
+      setRecent(prev => {
+        const next = prev.filter(p => p.id !== id);
+        writeRecent(next);
+        return next;
+      });
+      setOnboardingError('That saved workspace is no longer available.');
+    }
+  }, [rememberCompany, setCompanyId]);
+
+  const findCompanyByPhone = useCallback(async (phone: string) => {
+    setFindBusy(true);
+    setOnboardingError(null);
+    try {
+      const comp = await api.findCompanyByPhone(phone.trim());
+      setCompany(comp);
+      rememberCompany(comp);
+      setCompanyId(comp.id);
+    } catch (e) {
+      setOnboardingError(String((e as Error).message || e));
+    } finally {
+      setFindBusy(false);
+    }
+  }, [rememberCompany, setCompanyId]);
+
+  const handleUpload = useCallback(async (file: File) => {
+    if (companyId === null) return;
+    setUploading(true);
+    try {
+      const doc = await api.uploadDocument(companyId, file);
+      setNotice({ kind: 'success', text: `Uploaded "${doc.filename}" (${doc.chunks_count} chunks).` });
+      await refreshData(false);
+    } catch (e) {
+      setNotice({ kind: 'error', text: `Upload failed: ${(e as Error).message}` });
+    } finally {
+      setUploading(false);
+    }
+  }, [companyId, refreshData]);
+
+  const logout = useCallback(() => {
+    setCompany(null);
+    setCalls([]);
+    setDocuments([]);
+    setDetailId(null);
+    setCompanyId(null);
+  }, [setCompanyId]);
+
+  const openCall = useCallback((id: number) => {
+    if (id === 0) { setActive('Follow-up Cases'); setDetailId(null); }
+    else setDetailId(id);
+  }, []);
+
+  const content = useMemo(() => {
+    if (loading) return <LoadingState />;
+    if (companyId === null || company === null) {
+      return <Onboarding onCreate={createWorkspace} busy={onboardingBusy} error={onboardingError} onFindByPhone={findCompanyByPhone} findBusy={findBusy} recent={recent} onSignIn={signInCompany} />;
+    }
+    if (error) return <ErrorState message={error} onRetry={() => refreshData(true)} />;
+    if (detailId !== null) return <CallDetail jobId={detailId} onBack={() => setDetailId(null)} />;
+    switch (active) {
+      case 'Dashboard': return <Dashboard company={company} calls={calls} onViewCall={() => { setActive('Missed Calls'); }} onOpen={openCall} onConfigure={() => { setActive('Settings'); setDetailId(null); }} />;
+      case 'Missed Calls': return <MissedCalls calls={calls} onOpen={setDetailId} onRefresh={() => refreshData(true)} refreshing={refreshing} />;
+      case 'Call History': return <CallHistory calls={calls} onOpen={setDetailId} />;
+      case 'Knowledge Base': return <KnowledgeBase documents={documents} companyId={companyId} onUpload={handleUpload} uploading={uploading} />;
+      case 'Follow-up Cases': return <FollowUpCases calls={calls} onOpen={setDetailId} />;
+      case 'Phone Numbers': return <ProviderStatus title="Phone Numbers" desc="Connect and monitor the real business number used by Denwa." />;
+      case 'Analytics': return <GenericPage title="Analytics" desc="Measure missed calls, callbacks, resolution and follow-up performance." icon="chart" />;
+      case 'Settings': return <ProviderStatus title="Settings" desc="Business, provider and application configuration." />;
+      case 'Team': return <GenericPage title="Team" desc="Manage the people who can operate this Denwa workspace." icon="team" />;
+      default: return <Dashboard company={company} calls={calls} onViewCall={() => setActive('Missed Calls')} onOpen={openCall} onConfigure={() => { setActive('Settings'); setDetailId(null); }} />;
+    }
+  }, [loading, companyId, company, error, detailId, active, calls, documents, refreshing, uploading, onboardingBusy, onboardingError, findBusy, recent, openCall, refreshData, handleUpload, createWorkspace, signInCompany, findCompanyByPhone]);
+
+  return <div className="app">
+    {notice && <div className={`toast toast-${notice.kind}`}><span>{notice.text}</span><button onClick={() => setNotice(null)}><Icon name="close" size={13}/></button></div>}
+    {companyId === null ? (
+      <main className="main">{content}</main>
+    ) : (
+      <>
+        <Sidebar active={detailId !== null ? 'Missed Calls' : active} setActive={(v) => { setActive(v); setDetailId(null); }} open={mobileOpen} onClose={() => setMobileOpen(false)} company={company} />
+        <main className="main"><Header onMenu={() => setMobileOpen(true)} active={detailId !== null ? 'Missed Call Detail' : active} onLogout={logout} />{content}</main>
+      </>
+    )}
+  </div>;
 }
 
-createRoot(document.getElementById('root')!).render(<React.StrictMode><App /></React.StrictMode>);
+const rootEl = document.getElementById('root')!;
+const root = createRoot(rootEl);
+root.render(<React.StrictMode><App /></React.StrictMode>);
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => root.unmount());
+}
